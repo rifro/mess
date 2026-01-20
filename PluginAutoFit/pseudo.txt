@@ -1,0 +1,207 @@
+Je had nu drie voorstellen voor top level functie:
+1) processNormal
+2) voteOnNormal
+3) processNormalForVoting
+
+2) is niet altijd juist, omdat er niet altijd (onmiddellijk) gestemd wordt.
+3) is te lang,
+dus ik houd het bij 1).
+
+struct CacheEntry
+{
+	float3 axis;
+	float voteWeight;
+}
+
+struct RdvCache {
+    CacheEntry entries[CACHE_SIZE]; // 12-16
+    u8 count;  // Aantal gevulde slots
+} d_rdvCache;
+
+struct RdvRingBuffer
+{
+	float3 entires[RING_SIZE]; // 8
+	u8 count;
+	bool full;
+} d_rdvRing;
+
+
+// Ik heb injectNewAxis hernoemd naar push_backNewAxis(float3 normal)
+
+void push_backNewAxis(float3 axis, float voteWeight = 1.0f)
+{
+	 rdvCache.entries[rdvCache.posNext].axis = axis;
+	 rdvCache.entries[rdvCache.posNext].voteWeight = voteWeight;
+	 if (rdvCache.count < CACHE_SIZE)
+	 {
+	    rdvCache.count++;
+	    if (rdvCache.count < CACHE_SIZE-1) rdvCache.posNext++; // never write beyond last
+	    
+	    //alternatief:
+	    
+	    rdvCache.count++;
+	    rdvCache.posNext++;
+	    if (rdvCache.posNext == CACHE_SIZE) rdvCache.posNext--;
+	 }
+}
+
+void initRdvCache() // wordt aangeroepen voor Boeren ring filter en rdv beginnen.
+{
+	rdvCache.count = 0;   
+	rdvCache.posNext = 0; // position of next element to be written as index into CacheEntry entries[CACHE_SIZE].
+	
+	// Add main axis of current frame
+	push_backNewAxis(make_float3(1.0f, 0.0f, 0.0f));
+	push_backNewAxis(make_float3(0.0f, 1.0f, 0.0f));
+	push_backNewAxis(make_float3(0.0f, 0.0f, 1.0f));
+	
+	burstCount = 0;
+	prevAxis = make_float3(0,0,0);
+	planeBurst = false;
+}
+
+float pow2(float x) { return x*x;}
+
+float cos32(float cosSq)
+{   // (cos(15)) = 0.329762221 so vote counts for 1/3
+	return pow2(pow2(pow2(pow2(cosSq)))));
+}
+
+bool tryMatchAndNudgeMainCacheForward(float3 axis)
+{
+	float burstDot = calcDot(axis, prevAxis);
+	prevAxis = axis;
+	if (planeBurst && burstDot < cos5)
+	{
+		planeBurst = false;
+		burstCount = 0;
+	}
+	else // if (!planeBurst)
+	{
+		burstCount++;
+		planeBurst = burstCount > RdvConfig.burstCount // 10 
+	}
+	
+	// try find matching plane/axis
+	for (u8 i=0; i<rdvCache.count; ++i)
+	{
+	   float dot = calcDot(axis, rdvCache.entries[i].axis);
+	   if (planeBurst)
+	   {
+	      if (dot >= cos15) // hoek moet in [-15, +15] liggen
+	      {
+	         // for plane, for angle near 0, weight should be close to 1
+	         // dot^2 = cos^2
+	         rdvCache.entries[i].voteWeight += cos32(dot*dot);
+	         bubblesort; 
+			 return true;  // axis heeft gestemd en is processed
+		  }
+	   }
+	   else // "radial" burst
+	   {
+	      if (fabs(dot) < cos75) // hoek moet in [90-15, 90+15] liggen, dot < cos75
+	      {
+			/*
+			wat we weten:
+			x is hoek met vlak
+			cos(90-x) = +sin(x)
+			cos(90+x) = -sin(x).
+			als dot < 0: hoek > 90: dot = -sin(x)
+			als dot >=0: hoek <= 90: dot = +sin(x)
+			en voor het kwadraat maakt het teken niet uit, dus dot*dot = sin^2(x).
+			EN DUS: cos^2(x) = 1 - dot*dot.
+			*/
+			 rdvCache.entries[i].voteWeight += cos32(1.0f-dot*dot);  // is this clever or what? zonder dure sqrt of acosf...
+			 bubblesort;
+	         return true; // axis heeft gestemd en is processed
+	      }
+	   }
+	}// for
+	
+	return false; // axis mocht niet stemmen
+}
+
+bool tryMatchAndNudgeMainCacheReverse(float3 axis)
+{
+	// als hierboven, maar dan met:
+	for (i8 i=rdvCache.count-1; i>=0 && rdvCache.entries[i].voteWeight < 15.0f; --i)
+	{
+	...
+	}
+	
+	return false;
+}
+
+void initRingBuffer()
+{
+	rdvRing.count = 0;
+	bool RingFull = false;
+	i8 bestCrossIndex = -1;
+	float bestDot = cos70;
+}
+
+void ringBufferAdd(float3 axis)
+{
+   if (rdvRing.full)
+   {
+		// evict mag proberen te stemmen
+		tryMatchAndNudgeMainCacheReverse(rdvRing.entries[count]);
+		rdvRing.entries[count] = axis;
+		count++;
+		count &= 7; // mask = RING_SIZE -1;
+   }
+   else
+   {
+		rdvRing.entries[count] = axis;
+		count++;
+		full = count == RING_SIZE;
+		count &= 7; // mask = RING_SIZE -1;
+   }
+}
+
+bool bestCrossWithBuffer(float3 radial)
+{
+	// try find best cross partner
+	for (u8 i=0; i<rdvRing.count; ++i)
+	{
+		float dot = fabs(calcDot(radial, rdvRing.entries[i].axis));
+		if (dot < bestDot)
+		{
+		   bestDot = dot;
+		   bestCrossIndex = i;
+		}
+	}
+	
+	if (bestCrossIndex != -1)
+	{
+		float3 cross = calcCross(rdvRing.entries[bestCrossIndex].axis, radial);
+		float dot = calcDot(radial, rdvCache.entries[i].axis);
+		// voeg as toe aan cache, met stem van radial
+		push_backNewAxis(cross, 0.5f*cos32(1.0f-dot*dot));
+		return true; // best cross gevonden, axis toegevoegd, radial heeft gestemd en is 'processed'.
+	}
+	
+	return false;
+}
+
+processNormal(float3 normal)
+{
+	if (tryMatchAndNudgeMainCacheForward(normal))
+	   return; // normal has been processed
+	   
+	if (!rdvRing.full)
+	{
+		ringBufferAdd(normal); // mag later wellicht stemmen
+		return;
+	}  
+	//else
+	if (bestCrossWithBuffer(normal)
+	{
+		bool dummy = tryMatchAndNudgeMainCacheReverse(normal); // will always succeed
+		return; // normal has voted and is processed.
+	}
+	//else
+	ringBufferAdd(normal);
+}
+
+

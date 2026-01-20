@@ -1,0 +1,29 @@
+// 1) Voorbereiden Device Buffers (Host-side objecten die device memory beheren)
+    DeviceBuffer<float> d_x(N), d_y(N), d_z(N);
+    d_x.upload(nx.data(), N);
+    d_y.upload(ny.data(), N);
+    d_z.upload(nz.data(), N);
+
+    DeviceBuffer<Vec3f> d_points(N);
+    DeviceBuffer<Vec3f> d_pointsSorted(N);
+    DeviceBuffer<u64>   d_keys(N);
+    DeviceBuffer<u32>   d_index(N);
+    DeviceBuffer<u8>    d_labels(N);
+
+    // 2) Merge naar Vec3
+    h_mergeXyzNaarVec3(d_x, d_y, d_z, d_points);
+
+    // 3) Voxelize & Sort
+    h_voxelizeMorton(d_points, d_keys, d_index, d_pointsSorted);
+
+    // 4) Noise Filter
+    h_noiseFilter(d_pointsSorted, d_labels);
+
+    // 5) Voting (Detectie van assen)
+    CandidateAxes axes; // Host variabele, dus geen d_
+    h_vlakVoteCurrentFrame(d_pointsSorted, d_labels, axes);
+
+    // ... (rest van de logica gebruikt nu consequent d_pointsSorted, d_labels, etc.)
+
+    // 8) Split terug naar componenten
+    h_splitVec3NaarXyz(d_pointsSorted, d_x, d_y, d_z);

@@ -1,0 +1,20 @@
+# .gitignore
+# Negeer Visual Studio rommel
+.vs/
+out/
+build/
+bin/
+obj/
+*.user
+*.suo
+
+# Negeer gecompileerde CUDA/C++ files
+*.obj
+*.exe
+*.pdb
+*.lib
+*.exp
+
+# Negeer OS rommel
+.DS_Store
+Thumbs.db

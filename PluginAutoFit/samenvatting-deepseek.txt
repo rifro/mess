@@ -1,0 +1,1394 @@
+Ik begrijp dat je een volledig overzicht wilt van de RDV-architectuur, gehergroepeerd in logische volgorde, zonder details weg te laten, duplicaten te verwijderen en inconsistenties te melden. Hier is de gestructureerde samenvatting:
+
+# **Complete RDV Architectuur - Logische Synthese**
+
+## **I. Hoofdstructuur & Algemene Principes**
+
+### **1. Scheiding van Verantwoordelijkheden**
+- **Boeren-Ring Filter (Producer)**: Produceert alleen ruis-gefilterde normals. Bevat **geen** stem- of cache-logica.
+- **RDV-Kernel (Voter)**: Bevat alle intelligente logica: vlak-burst detectie, buis-FIFO beheer, as-verfijning (nudging).
+
+### **2. Parallelle Architectuur Hiërarchie**
+```
+Host (Paginering) → Chunks (Map) → Regions (Shared Memory)
+```
+- **Micro-niveau (Region)**: 4k-16k punten, Shared Memory, voor GPU-efficiëntie
+- **Macro-niveau (Pagina/Chunk)**: 22.5M-3.5 GB, Global Memory, voor VRAM-beheer
+- **Consistentie**: De paginering vormt input voor regions - gelaagde optimalisatie zonder conflict.
+
+### **3. Type- en Structuurdefinities**
+```cpp
+// Basis types
+using u8, u16, i32, f32;  // Voor bit-precisie
+
+// Labeling (PascalCase)
+enum PointType { Pipe, Chaos, Duplicate, HypotheticalFlag=0x80 };
+
+// Workload structuur
+struct AxisChunk {
+    std::span<float> coords;     // Data pointer + length
+    char originalAxisName;       // 'X', 'Y', 'Z' (voor terugvertaling)
+};
+```
+
+---
+
+## **II. Host Orchestratie & Geheugenbeheer**
+
+### **1. VRAM-beheer en Paginering**
+- **Veilige Data Limiet (V_safe)**: Look-up tabel per GPU (RTX 2060: 3.5 GB, RTX 4070: 10.0 GB)
+- **Implementatie**: `cudaMemGetInfo()` + GPU-naam lookup
+- **Rationale**: Houdt 2.0-2.5 GB reserve voor overhead
+
+### **2. Recursieve Workload Splitsing**
+- **Principe**: Split langs langste as (V_x') op basis van point-count
+- **Doel**: Herstel Morton-anisotropie (1:2 bitverhouding)
+- **As-hernaming**: Swappen van `AxisChunk` structs bij elke splitsing voor uniforme X', Y', Z'
+
+### **3. Workflow**
+1. Bepaal V_safe via GPU lookup
+2. Split wolk in pagina's binnen V_safe limiet
+3. Recursief splits chunks tot gebalanceerde workload
+4. Map chunks naar GPU met correcte as-mapping
+
+---
+
+## **III. Boeren-Ring Filter (Producer) - `k_generate_normals.cu`**
+
+### **1. Doel en Output**
+- **Doel**: Vroegtijdige workload reductie + zuivere normal generatie
+- **Output**: Normals + voorlopige labeling (Chaos/Ruis/Duplicate)
+
+### **2. Kernalgoritme**
+```cpp
+__global__ void k_generate_normals(Point* points, const SizeT totalPoints) {
+    // 1. Verzamel ringpunten (max 4) binnen r2
+    // 2. Early-out bij 2× farPointCount
+    // 3. Label Chaos bij ringCount<3 of farPointCount≥2
+    // 4. Planariteitstest met short-circuit (|| operator)
+    // 5. Collineariteitscheck vóór normal berekening
+}
+```
+
+### **3. Kritieke Details**
+- **Early-out**: `if (farPointCount >= 2) break;` - bovenaan de lus
+- **Afstandstest volgorde**: Eerst R2, dan R1 voor efficiëntie
+- **Labeling**: `PointType::Chaos` voor centrumpunt + alle punten binnen r2
+- **Driehoek validatie**: `isCollinear()` als eerste check
+
+### **4. Planariteitstest**
+- Twee driehoeken testen met `||` operator
+- Alleen tweede test als eerste faalt
+- Retourneert normal via out-parameter
+
+---
+
+## **IV. RDV Voter Kernel - `k_adaptive_rdv_voter.cu`**
+
+### **1. Cache Structuur en Logica**
+- **Hoofdcache**: K slots (bijv. 12-16) voor richtingen
+- **Ringbuffer**: N=8 voor nieuwe radiaal detectie
+
+### **2. `tryMatchAndNudgeMainCache` - Kernfunctionaliteit**
+```cpp
+__device__ bool tryMatchAndNudgeMainCache(float3 n_in, RdvCache* cache) {
+    // Zoek beste match in cache
+    // Switch tussen cos³² (vlak) en sin³² (buis)
+    // Als match > drempel: nudging + return true
+    // Anders: return false (geen stem, geen nudge)
+}
+```
+
+### **3. Nudging Mechanisme**
+- **Formule**: Running Average: `V_nieuw = (1-α)·V_oud + α·n_nieuw`
+- **α**: `1 / (Count + Init)` voor statistisch zuivere middeling
+- **Beveiliging**: Gewicht met `cos²ⁿ(θ)` als zelf-beveiligend filter
+- **Hard cutoff**: 20° hoeklimiet voor workload reductie
+
+### **4. Vormdetectie Logica**
+| Vorm | Geometrie | Gewichtsfunctie | Actie |
+|------|-----------|----------------|-------|
+| **Vlak** | n_in ∥ V_as | `cos³²(θ)` | Direct nudgen parallelle richting |
+| **Buis** | n_in ⊥ V_as | `sin³²(θ)` | Nudgen orthogonale as |
+| **Geen match** | θ > 20° | - | Naar ringbuffer |
+
+### **5. Gewichtsberekening Functies**
+```cpp
+__device__ float cos32_pow(float cos_val) {
+    // 5 vermenigvuldigingen: x² → x⁴ → x⁸ → x¹⁶ → x³²
+}
+
+__device__ float sin32_pow(float angle_rad) {
+    // sin(x) = cos(π/2 - x) identiteit
+    return cos32_pow(cosf(1.57079632679f - angle_rad));
+}
+```
+
+---
+
+## **V. Ringbuffer en Buisas Generatie**
+
+### **1. `inkomendeRadiaal` - Gatekeeper Logica**
+```cpp
+__device__ void inkomendeRadiaal(float3 radiaal) {
+    // Alleen aangeroepen als tryMatchAndNudgeMainCache false retourneerde
+    
+    if (ringCount < 8) {
+        // Vul buffer
+        Ring[posNext] = radiaal;
+        ringCount++;
+        posNext = (posNext + 1) & 7;
+        return;
+    }
+    
+    // Sweep bij volle buffer (ringCount == 8)
+    // Test paren op cyclische afstand 3
+    // Zoek eerste kandidaat met hoek ≥70°
+    // Injecteer in hoofd-cache bij valideren
+    // Bubble swap + evict laagste weight
+}
+```
+
+### **2. Sweep Algoritme**
+- **Start**: Alleen bij `ringCount == 8`
+- **Complexiteit**: O(1) - vaste cyclische afstanden testen
+- **Validatiedrempel**: Gewicht ≥ T_validatie
+- **Injectie**: Nieuwe as met laag startgewicht (0 of 1)
+
+### **3. Buffer Reset**
+- **Crude clearing**: Reset na succesvolle sweep
+- **Rationale**: Nieuwe as overleeft op globale dominantie, niet op weggeworpen radialen
+
+---
+
+## **VI. Adaptive Warme-Start en Consensus**
+
+### **1. Seeding Strategie**
+- **Input**: 3 assen van current frame (X_cur, Y_cur, Z_cur)
+- **Injectie**: Als seeds met lage start-count
+- **Voordeel**: Snelle start zonder vaste kruisproducten
+
+### **2. Vlak-Burst Detectie**
+- Detectie: Opeenvolgende parallelle normals
+- Actie: Normals stemmen direct op eigen richting (niet op orthogonale)
+- Correctie: Fixeert OTNDC fout
+
+### **3. Stopcriterium**
+- **Adaptief**: Top 3 orthogonale richtingen >90% van stemmen
+- **Early-out**: Parallelle chunk verwerking + snelle consensus
+
+### **4. Globale Reductie**
+- **Host verantwoordelijkheid**: MapReduce over alle chunks
+- **Methode**: Gewogen gemiddelde van lokaal genudgete assen
+- **Output**: Definitieve globale consensusrichting
+
+---
+
+## **VII. Call Graph en Data Flow**
+
+```
+Host Orchestrator
+    ├── VRAM Beheer (cudaMemGetInfo + lookup)
+    ├── Recursieve Splitsing (AxisChunk swap)
+    └── Pagina Streamen
+        └── GPU Launch
+            ├── k_generate_normals (Producer)
+            │   ├── passesPlanarityTest
+            │   │   └── isCollinear
+            │   └── RDV Output Buffer
+            └── k_adaptive_rdv_voter (Consumer)
+                ├── tryMatchAndNudgeMainCache
+                │   ├── cos32_pow / sin32_pow
+                │   └── d_dot3
+                └── inkomendeRadiaal (bij false return)
+                    └── Ringbuffer Sweep
+```
+
+---
+
+## **VIII. Inconsistenties en Correcties**
+
+### **1. Gemini Samenvatting vs. Manuele Edit**
+- **Punt 4 (Gemini)**: "Er wordt een normal geleverd" → **Gecorrigeerd**: Alleen bij succesvolle planariteitstest
+- **Punt 6 (Gemini)**: "Er wordt maar 1 cross geproduceerd" → **Gecorrigeerd**: Ringbuffer produceert maximaal 3 sterke hypothesen
+
+### **2. Duplicaten Verwijderd**
+- Nudging beschrijving was herhaald in meerdere secties - samengevoegd
+- Cache structuur beschrijving was redundant - geconsolideerd
+
+### **3. Verduidelijkingen**
+- **`findBestMatchingAxis`** is overbodig - functionaliteit zit in `tryMatchAndNudgeMainCache`
+- **Ringbuffer reset**: Alleen crude clearing bij succes, geen volledige reset
+- **As injectie**: Nieuwe assen krijgen laag startgewicht (0 of 1), niet alleen 1
+
+### **4. Kritieke Consistentie Check**
+- **Producer filter** labelt punten als `Chaos` → dit is **overschrijfbaar**
+- **Voter kernel** kan labels aanpassen bij latere verfijning
+- **Workload reductie** werkt door vroege Chaos labeling + harde cutoff (20°)
+
+---
+
+## **IX. Implementatie Checklist**
+
+### **Host-side (CPU)**
+- [ ] GPU VRAM lookup tabel (JSON)
+- [ ] Recursieve splitsing logica
+- [ ] AxisChunk swap mechanisme
+- [ ] MapReduce voor globale consensus
+
+### **Device-side (GPU) - Producer**
+- [ ] Early-out bij farPointCount≥2
+- [ ] Short-circuit planariteitstest
+- [ ] Collineariteitscheck vóór normal berekening
+- [ ] Overschrijfbare Chaos labeling
+
+### **Device-side (GPU) - Voter**
+- [ ] `tryMatchAndNudgeMainCache` met cos³²/sin³² switch
+- [ ] Running average nudging met α formule
+- [ ] Hard cutoff op 20°
+- [ ] Ringbuffer met O(1) sweep
+- [ ] Bubble swap + evict mechanisme
+
+---
+
+**Eindstatus**: Deze architectuur is consistent, bevat alle details zonder duplicaten, en biedt voldoende specificatie voor zowel Jules AI als menselijke ontwikkelaars om de code te genereren. De pipeline is volledig paralleliseerbaar, adaptief voor zowel vlakken als buizen, en robuust tegen ruis door meerdere beveiligingslagen.
+
+===
+Je hebt gelijk - ik miste de cruciale **stemlogica** in de vormdetectie. Hier is de uitgebreide en gecorrigeerde sectie:
+
+## **IV. RDV Voter Kernel - `k_adaptive_rdv_voter.cu`** (Gecorrigeerd)
+
+### **4. Vormdetectie en Stemlogica**
+
+De kernel onderscheidt dynamisch tussen **vlakken** en **buizen** en past de stemming dienovereenkomstig aan:
+
+#### **A. Vlakdetectie en Stemming**
+```cpp
+// Pseudo-code voor vlak-burst detectie en stemming
+__device__ void processIncomingNormal(float3 n_in) {
+    // Controleer of dit deel uitmaakt van een vlak-burst
+    if (isPlaneBurst(n_in, previous_normals)) {
+        // VLAK MODUS: Stem op parallelle richting
+        
+        // 1. Zoek beste vlakrichting in cache (θ ≈ 0°)
+        int best_slot = -1;
+        float max_cos_weight = 0.0f;
+        
+        for (int i = 0; i < CACHE_SIZE; i++) {
+            float cos_theta = fabsf(dot(n_in, cache.axes[i]));
+            float weight = cos32_pow(cos_theta);
+            
+            if (weight > max_cos_weight && weight > MIN_VLAK_DRUMPEL) {
+                max_cos_weight = weight;
+                best_slot = i;
+            }
+        }
+        
+        // 2a. Als match gevonden: Nudge deze as
+        if (best_slot >= 0) {
+            // Running average nudging
+            float alpha = 1.0f / (cache.counts[best_slot] + INIT_COUNT);
+            cache.axes[best_slot] = normalize(
+                (1.0f - alpha) * cache.axes[best_slot] + 
+                alpha * n_in * max_cos_weight  // Gewogen door fit-kwaliteit
+            );
+            cache.counts[best_slot]++;
+            return; // KLAAR - vlak is verwerkt
+        }
+        
+        // 2b. Geen bestaande vlakrichting: creëer nieuwe
+        if (cache.hasEmptySlot()) {
+            cache.addNewAxis(n_in, INIT_COUNT);
+            return;
+        }
+    }
+    
+    // GEEN VLAK → ga naar buis/radiaal logica
+    processAsRadial(n_in);
+}
+```
+
+#### **B. Buisdetectie en Stemming**
+```cpp
+__device__ void processAsRadial(float3 radiaal) {
+    // BUIS MODUS: Stem op orthogonale richting (θ ≈ 90°)
+    
+    // 1. Zoek beste orthogonale as in cache
+    int best_slot = -1;
+    float max_sin_weight = 0.0f;
+    
+    for (int i = 0; i < CACHE_SIZE; i++) {
+        float cos_theta = fabsf(dot(radiaal, cache.axes[i]));
+        float angle = acosf(cos_theta);
+        float weight = sin32_pow(angle);  // Beloning voor 90°
+        
+        if (weight > max_sin_weight && weight > MIN_BUIS_DRUMPEL) {
+            max_sin_weight = weight;
+            best_slot = i;
+        }
+    }
+    
+    // 2a. Match gevonden: Nudge orthogonale as
+    if (best_slot >= 0) {
+        // RADIAAL STEMT OP BUIS-AS
+        float alpha = 1.0f / (cache.counts[best_slot] + INIT_COUNT);
+        
+        // Radiaal moet loodrecht staan op buis-as
+        // Nudge de as richting de loodrechte van de radiaal
+        float3 orthogonal_component = radiaal - dot(radiaal, cache.axes[best_slot]) * cache.axes[best_slot];
+        if (length(orthogonal_component) > EPSILON) {
+            orthogonal_component = normalize(orthogonal_component);
+            cache.axes[best_slot] = normalize(
+                (1.0f - alpha) * cache.axes[best_slot] + 
+                alpha * orthogonal_component * max_sin_weight
+            );
+        }
+        cache.counts[best_slot]++;
+        cache.weights[best_slot] += max_sin_weight;
+        return;
+    }
+    
+    // 2b. Geen match: naar ringbuffer voor nieuwe hypothese
+    inkomendeRadiaal(radiaal);
+}
+```
+
+#### **C. Vlak-Burst Detectie Logica**
+```cpp
+__device__ bool isPlaneBurst(float3 n_in, float3* previous_normals, int& burst_counter) {
+    // Check op opeenvolgende parallelle normals
+    const float PLANE_THRESHOLD = 0.98f;  // cos(≈11°)
+    
+    for (int i = 0; i < BURST_WINDOW; i++) {
+        if (dot(n_in, previous_normals[i]) > PLANE_THRESHOLD) {
+            burst_counter++;
+            if (burst_counter >= MIN_BURST_COUNT) {
+                return true;  // VLAK-BURST GEDETECTEERD
+            }
+        }
+    }
+    
+    burst_counter = max(0, burst_counter - 1);  // Decay
+    return false;
+}
+```
+
+### **5. Geometrische Relaties - Volledig Overzicht**
+
+| Situatie | Inkomende Vector | Doel-Richting | Gewichtsfunctie | Stem-Actie |
+|----------|------------------|---------------|-----------------|------------|
+| **Vlak (Burst)** | Normal `n` | Parallel aan `n` | `cos³²(θ)` | `n` stemt op **zichzelf** (parallelle richting) |
+| **Buis (Radiaal)** | Normal `n` | Loodrecht op `n` | `sin³²(θ)` | `n` stemt op **orthogonale as** |
+| **Nieuw Vlak** | Normal `n` | - | `cos³²(θ)` | Creëert nieuwe cache-entry |
+| **Nieuwe Buis** | Normal `n` | - | `sin³²(θ)` | Gaat naar ringbuffer voor hypothese |
+
+### **6. Belangrijke Correctie op OTNDC**
+De traditionele OTNDC fout is dat **alle normals op orthogonale richtingen stemmen**. Onze architectuur corrigeert dit:
+
+- **VLAKKEN**: Normals stemmen op **parallelle richting** (`cos³²`)
+- **BUISEN**: Normals (radialen) stemmen op **orthogonale richting** (`sin³²`)
+
+Dit betekent dat de **Vlak-Burst detectie essentieel is** - zonder deze detectie zouden vlaknormals ten onrechte op buisrichtingen stemmen.
+
+### **7. Stem-Doorstroming Diagram**
+```
+Inkomende Normal
+    ↓
+[Is PlaneBurst?] → JA → Stem op PARALLELE richting (cos³²)
+    ↓ NEE
+[Is Orthogonal Match?] → JA → Stem op ORTHOGONALE richting (sin³²)
+    ↓ NEE
+[Ringbuffer voor nieuwe hypothese]
+    ↓
+[Sweep bij volle buffer]
+    ↓
+[Genereer nieuwe buisas]
+```
+
+### **8. Implementatie Details Stemlogica**
+
+```cpp
+// Kern van de stemming - integratie in tryMatchAndNudgeMainCache
+__device__ bool tryMatchAndNudgeMainCache(float3 n_in, bool is_plane_burst) {
+    if (is_plane_burst) {
+        // VLAK STEM: zoek beste parallelle match
+        return findAndNudgeBestMatch(n_in, COS_MODE);
+    } else {
+        // BUIS STEM: zoek beste orthogonale match
+        return findAndNudgeBestMatch(n_in, SIN_MODE);
+    }
+}
+
+enum MatchMode { COS_MODE, SIN_MODE };
+
+__device__ bool findAndNudgeBestMatch(float3 n_in, MatchMode mode) {
+    float best_weight = 0.0f;
+    int best_idx = -1;
+    
+    for (int i = 0; i < CACHE_SIZE; i++) {
+        float cos_theta = dot(n_in, cache.axes[i]);
+        float weight;
+        
+        if (mode == COS_MODE) {
+            weight = cos32_pow(fabsf(cos_theta));  // Parallel belonen
+        } else { // SIN_MODE
+            float angle = acosf(fabsf(cos_theta));
+            weight = sin32_pow(angle);  // Orthogonaal belonen (90°)
+        }
+        
+        if (weight > best_weight && weight > MIN_STEM_DRUMPEL) {
+            best_weight = weight;
+            best_idx = i;
+        }
+    }
+    
+    if (best_idx >= 0) {
+        // NUDGING TOEPASSEN
+        nudgeAxis(best_idx, n_in, best_weight, mode);
+        return true;
+    }
+    
+    return false;  // GEEN STEM UITGEVOERD
+}
+```
+
+**Belangrijk**: De stemming gebeurt dus **selectief**:
+- Vlakken → stemmen alleen op vlakrichtingen
+- Buizen → stemmen alleen op buisrichtingen
+- Geen match → geen stemming (gaat naar ringbuffer)
+
+Dit voorkomt de OTNDC fout en zorgt voor snellere, nauwkeurigere consensusvorming.
+
+===
+
+Je hebt **gelijk** - mijn vorige uitleg was **niet correct**. Je beschrijft precies wat er moet gebeuren: de radiaal die overschreven wordt moet kunnen stemmen op het **duale vlak** van een al gegenereerd kruisproduct (potentiële prominente richting).
+
+Laten ik dit correct uitleggen:
+
+## **Correcte Logica: Stemmen op het Duale Vlak**
+
+### **1. Geometrische Relaties Herzien**
+
+Voor een **kruisproduct** (potentiële buis-as) `C = A × B`:
+- `C` = buis-as richting (loodrecht op vlak van A en B)
+- **Duaal vlak** = vlak gespannen door A en B (of elke vector loodrecht op C)
+- **Normaal van duaal vlak** = `C` zelf (of elke vector parallel aan C)
+
+Een **radiaal** die bij een buis hoort:
+- Moet **loodrecht** staan op de buis-as `C` (hoek ≈ 90°)
+- Moet dus **parallel** zijn aan het duaal vlak
+- En moet **loodrecht** staan op de normaal van het duaal vlak (die is `C`)
+
+### **2. Correcte Implementatie**
+
+```cpp
+__device__ void inkomendeRadiaal(float3 nieuwe_radiaal) {
+    // Buffer vol check
+    bool buffer_vol = (ringCount == 8);
+    
+    if (!buffer_vol) {
+        // Gewoon toevoegen
+        Ring[posNext] = nieuwe_radiaal;
+        ringCount++;
+        posNext = (posNext + 1) & 7;
+        return;
+    }
+    
+    // ★★★ KRITIEK: Oude radiaal laat stemmen ★★★
+    int pos_te_overschrijven = posNext;
+    float3 oude_radiaal = Ring[pos_te_overschrijven];
+    
+    // STAP 1: Check of oude radiaal kan stemmen op BESTAANDE cache-assen
+    // (Dit gebeurt in de normale stemming flow - niet hier)
+    
+    // STAP 2: Check of oude radiaal kan stemmen op KRUISPRODUCTEN
+    // die al gegenereerd zijn uit andere radialen in de buffer
+    
+    // Doorloop alle mogelijke paren in de buffer
+    float beste_gewicht = 0.0f;
+    float3 beste_buis_as = {0,0,0};
+    
+    for (int i = 0; i < 8; i++) {
+        if (i == pos_te_overschrijven) continue;  // Skip zichzelf
+        
+        for (int j = i+1; j < 8; j++) {
+            if (j == pos_te_overschrijven) continue;
+            
+            float3 r1 = Ring[i];
+            float3 r2 = Ring[j];
+            
+            // Genereer kruisproduct (potentiële buis-as)
+            float3 kruis = normalize(cross(r1, r2));
+            
+            // ★★★ Check of OUDE RADIAAL op het DUAL VLAK kan stemmen ★★★
+            // Oude radiaal moet ~loodrecht staan op kruis (de buis-as)
+            // Dit betekent: hoek tussen oude_radiaal en kruis ≈ 90°
+            
+            float cos_hoek = fabsf(dot(oude_radiaal, kruis));
+            
+            // ★★★ CORRECTE CHECK: gebruik sin(θ) of cos(90°-θ) ★★★
+            // We willen hoeken dicht bij 90° belonen
+            // Dit is gelijk aan cos(θ) dicht bij 0 belonen
+            
+            if (cos_hoek < COS_75) {  // cos(75°) ≈ 0.2588, hoek ≥ 75°
+                // Bereken het gewicht: hoe dichter bij 90°, hoe beter
+                // sin²ⁿ(θ) = (1 - cos²(θ))ⁿ voor hoeken rond 90°
+                
+                float angle = acosf(cos_hoek);
+                float gewicht = sin32_pow(angle);  // sin³²(θ)
+                
+                // ★★★ BELANGRIJK: Extra validatie ★★★
+                // De twee radialen r1 en r2 moeten ook ~loodrecht op kruis staan
+                float cos_r1 = fabsf(dot(r1, kruis));
+                float cos_r2 = fabsf(dot(r2, kruis));
+                
+                if (cos_r1 < COS_75 && cos_r2 < COS_75) {
+                    // Alledrie ~loodrecht op dezelfde as → sterke buis-hypothese
+                    float totaal_gewicht = (gewicht + sin32_pow(acosf(cos_r1)) + 
+                                           sin32_pow(acosf(cos_r2))) / 3.0f;
+                    
+                    if (totaal_gewicht > beste_gewicht) {
+                        beste_gewicht = totaal_gewicht;
+                        beste_buis_as = kruis;
+                    }
+                }
+            }
+        }
+    }
+    
+    // STAP 3: Als geldige hypothese, injecteer in cache
+    if (beste_gewicht > T_VALIDATIE) {
+        injecteerInCache(beste_buis_as, beste_gewicht);
+        
+        // Buffer clearing
+        ringCount = 0;
+        posNext = 0;
+        Ring[0] = nieuwe_radiaal;
+        ringCount = 1;
+        posNext = 1;
+        return;
+    }
+    
+    // STAP 4: Geen match - doe O(1) sweep met NIEUWE radiaal
+    // ... bestaande sweep logica ...
+    
+    // Overschrijf tenslotte
+    Ring[posNext] = nieuwe_radiaal;
+    posNext = (posNext + 1) & 7;
+}
+```
+
+### **3. Wiskundige Correctie**
+
+Je hebt gelijk over de hoekberekening:
+
+Voor een **radiaal** `R` en een **buis-as** `C`:
+- Ideaal: `R ⊥ C` (hoek = 90°)
+- Acceptabel: hoek tussen 75° en 105° (15° tolerantie)
+- `cos(75°) ≈ 0.2588`, `cos(105°) ≈ -0.2588`
+
+**Check**: `|dot(R, C)| < cos(75°) ≈ 0.2588`
+
+Dit is equivalent aan:
+- `sin(θ) > cos(15°) ≈ 0.9659` (voor θ ≈ 90°)
+- Of: `|θ - 90°| < 15°`
+
+### **4. Volledige Correctie in Gewichtsberekening**
+
+```cpp
+__device__ float berekenBuisGewicht(float3 radiaal, float3 buis_as) {
+    float cos_theta = fabsf(dot(radiaal, buis_as));
+    
+    // ★★★ CORRECT: Hoek van 90° is ideaal ★★★
+    // sin(θ) is maximaal bij θ = 90°
+    // sin³²(θ) beloont hoeken dicht bij 90°
+    
+    float angle = acosf(cos_theta);
+    return sin32_pow(angle);
+}
+
+// Of efficiënter zonder acos:
+__device__ float berekenBuisGewichtEfficient(float3 radiaal, float3 buis_as) {
+    float cos_theta = fabsf(dot(radiaal, buis_as));
+    
+    // sin²(θ) = 1 - cos²(θ)
+    float sin2_theta = 1.0f - cos_theta * cos_theta;
+    
+    // sin³²(θ) = (sin²(θ))¹⁶
+    float sin32 = sin2_theta * sin2_theta;  // sin⁴
+    sin32 = sin32 * sin32;  // sin⁸
+    sin32 = sin32 * sin32;  // sin¹⁶
+    sin32 = sin32 * sin32;  // sin³²
+    
+    return sin32;
+}
+```
+
+### **5. Praktische Implementatie met Cutoff**
+
+```cpp
+// In probeerBuismatch of vergelijkbare functie:
+__device__ bool kanRadiaalStemmenOpBuis(float3 radiaal, float3 buis_as, 
+                                       float& uit_gewicht) {
+    const float COS_CUTOFF = 0.2588f;  // cos(75°)
+    const float MIN_GEWICHT = 0.1f;    // minimale sin³² waarde
+    
+    float cos_theta = fabsf(dot(radiaal, buis_as));
+    
+    // Eerst: cutoff check
+    if (cos_theta > COS_CUTOFF) {
+        return false;  // Hoek te klein (<75°) of te groot (>105°)
+    }
+    
+    // Bereken gewicht
+    float angle = acosf(cos_theta);
+    uit_gewicht = sin32_pow(angle);
+    
+    return (uit_gewicht > MIN_GEWICHT);
+}
+```
+
+### **6. Conclusie - Wat Echt Gebeurt:**
+
+1. **Oude radiaal R_oud** staat op punt overschreven te worden
+2. **Eerst checken**: Kan R_oud stemmen op bestaande cache-assen? (normale flow)
+3. **Dan checken**: Kan R_oud met andere radialen in buffer een buis vormen?
+   - Genereer kruisproduct C = R_i × R_j
+   - Check of R_oud ⊥ C (binnen 15° tolerantie)
+   - Zo ja: bereken gewicht en injecteer C in cache
+4. **Indien succes**: Buffer clearing, nieuwe start
+5. **Anders**: R_oud wordt overschreven zonder verder effect
+
+### **Belangrijkste Correctie:**
+Je had gelijk dat we moeten kijken naar de **hoek tussen radiaal en buis-as**, niet tussen radialen onderling. En de cutoff is inderdaad rond **75°-105°** (15° tolerantie rond 90°).
+
+Dit zorgt ervoor dat een radiaal op het punt van eviction nog een **laatste kans** heeft om bij te dragen aan buisdetectie, door te stemmen op een al gegenereerde (of te genereren) buis-as waar hij loodrecht op staat.
+
+
+===
+
+Je hebt **volkomen gelijk** - mijn fout. Laten we dit correct analyseren:
+
+## **Correcte Analyse: Waarom Opnieuw Stemmen Niet Mag**
+
+### **1. Call Flow Correctie**
+```
+[Inkomende Radiaal]
+    ↓
+tryMatchAndNudgeMainCache(nieuw) → false (GEEN match in cache)
+    ↓
+inkomendeRadiaal(nieuw)  ← Wordt ALLEEN hier aangeroepen bij FAIL
+    ↓
+// Oude radiaal heeft AL geprobeerd op cache te stemmen toen hij binnenkwam
+// Hij heeft TOEN al gefaald, dus nu opnieuw proberen is zinloos
+```
+
+### **2. De Enige Mogelijkheid: Nieuw Kruisproduct**
+De **enige reden** waarom de oude radiaal nu wél zou kunnen stemmen is als:
+- Er in de tussentijd een **nieuw kruisproduct** is gegenereerd
+- Of als combinatie met **nieuwe radiaal** een kruisproduct maakt
+
+Maar zelfs dan: als er een nieuw kruisproduct was gegenereerd, zou dat **al in de cache zijn geïnjecteerd**. En de oude radiaal zou bij de volgende iteratie weer `tryMatchAndNudgeMainCache` krijgen.
+
+### **3. Correcte Implementatie**
+```cpp
+__device__ void inkomendeRadiaal(float3 nieuwe_radiaal) {
+    // Buffer vol check
+    bool buffer_vol = (ringCount == 8);
+    
+    if (!buffer_vol) {
+        // Gewoon toevoegen
+        Ring[posNext] = nieuwe_radiaal;
+        ringCount++;
+        posNext = (posNext + 1) & 7;
+        return;
+    }
+    
+    // ★★★ GEEN OPNEUW STEMMEN OP CACHE ★★★
+    // Oude radiaal heeft dit AL geprobeerd toen hij binnenkwam
+    // En gefaald (anders was hij niet in de buffer beland)
+    
+    int pos_te_overschrijven = posNext;
+    float3 oude_radiaal = Ring[pos_te_overschrijven];
+    
+    // ★★★ ENIGE OPTIE: Probeer kruisproduct met NIEUWE radiaal ★★★
+    float beste_gewicht = 0.0f;
+    float3 beste_buis_as = {0,0,0};
+    
+    // Test oude_radiaal tegen nieuwe_radiaal
+    float cos_hoek = fabsf(dot(oude_radiaal, nieuwe_radiaal));
+    
+    if (cos_hoek < COS_75) {  // Hoek ≥ 75°
+        // Potentieel kruisproduct
+        float3 kruis = normalize(cross(oude_radiaal, nieuwe_radiaal));
+        
+        // Beide moeten ~loodrecht op kruis staan
+        float gewicht_oud = berekenBuisGewicht(oude_radiaal, kruis);
+        float gewicht_nieuw = berekenBuisGewicht(nieuwe_radiaal, kruis);
+        
+        if (gewicht_oud > MIN_DRUMPEL && gewicht_nieuw > MIN_DRUMPEL) {
+            beste_gewicht = (gewicht_oud + gewicht_nieuw) * 0.5f;
+            beste_buis_as = kruis;
+        }
+    }
+    
+    // Als nog steeds geen match: test met andere radialen in buffer
+    if (beste_gewicht == 0.0f) {
+        for (int i = 0; i < 8; i++) {
+            if (i == pos_te_overschrijven) continue;
+            
+            float3 andere_radiaal = Ring[i];
+            cos_hoek = fabsf(dot(oude_radiaal, andere_radiaal));
+            
+            if (cos_hoek < COS_75) {
+                float3 kruis = normalize(cross(oude_radiaal, andere_radiaal));
+                
+                float gewicht_oud = berekenBuisGewicht(oude_radiaal, kruis);
+                float gewicht_andere = berekenBuisGewicht(andere_radiaal, kruis);
+                
+                if (gewicht_oud > MIN_DRUMPEL && gewicht_andere > MIN_DRUMPEL) {
+                    float totaal_gewicht = (gewicht_oud + gewicht_andere) * 0.5f;
+                    
+                    if (totaal_gewicht > beste_gewicht) {
+                        beste_gewicht = totaal_gewicht;
+                        beste_buis_as = kruis;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Injectie indien geldig kruisproduct gevonden
+    if (beste_gewicht > T_VALIDATIE) {
+        injecteerInCache(beste_buis_as, beste_gewicht);
+        
+        // Buffer clearing - start opnieuw
+        ringCount = 0;
+        posNext = 0;
+        Ring[0] = nieuwe_radiaal;
+        ringCount = 1;
+        posNext = 1;
+        return;
+    }
+    
+    // ★★★ GEEN MATCH: doe O(1) sweep met huidige buffer ★★★
+    // (Zonder de oude radiaal - die wordt toch overschreven)
+    
+    // Hier de bestaande O(1) sweep logica met vaste offsets
+    // ...
+    
+    // Tenslotte overschrijven
+    Ring[posNext] = nieuwe_radiaal;
+    posNext = (posNext + 1) & 7;
+}
+```
+
+## **Kernpunt: Tijdlijn van een Radiaal**
+
+```
+T0: Radiaal R komt binnen
+    → tryMatchAndNudgeMainCache(R) → false
+    → inkomendeRadiaal(R) → toegevoegd aan buffer
+
+T1..T7: Meer radialen komen binnen, buffer vult zich
+    Elke radiaal heeft al geprobeerd op cache te stemmen
+
+T8: Buffer vol, nieuwe radiaal N komt binnen
+    → tryMatchAndNudgeMainCache(N) → false
+    → inkomendeRadiaal(N)
+    
+    Oude radiaal R (nu aan eviction) heeft AL op cache geprobeerd te stemmen
+    EN GEFAALD
+    
+    ★★★ ENIGE HOOP: ★★★
+    Misschien staat R loodrecht op N (of andere buffer radialen)
+    → Dan kunnen ze SAMEN een nieuw kruisproduct vormen
+    → Dat kan geïnjecteerd worden in cache
+    → Waarop toekomstige radialen WEL kunnen stemmen
+```
+
+## **Waarom Dit Correct Is:**
+
+1. **Efficiëntie**: Geen dubbele cache-checks
+2. **Consistentie**: Als radiaal op cache had kunnen stemmen, had hij dat gedaan toen hij binnenkwam
+3. **Enige nieuwe mogelijkheid**: Combinatie met nieuwe/andere radialen voor nieuw kruisproduct
+
+## **Praktisch Voorbeeld:**
+
+```cpp
+// Radiaal R1 komt binnen (richting X-as)
+tryMatchAndNudgeMainCache(R1) → false (geen Y- of Z-as in cache)
+→ in buffer
+
+// Radiaal R2 komt binnen (richting Y-as)  
+tryMatchAndNudgeMainCache(R2) → false (geen X- of Z-as in cache)
+→ in buffer
+
+// Buffer vol, R3 komt binnen (richting Z-as)
+tryMatchAndNudgeMainCache(R3) → false
+→ inkomendeRadiaal(R3)
+
+// Oude R1 (X) en nieuwe R3 (Z) hebben hoek 90°
+// Kruisproduct = Y-as (nieuwe buis-as!)
+// Injecteer Y-as in cache
+// Buffer clearing
+
+// Volgende radiaal R4 (richting Y-as)
+tryMatchAndNudgeMainCache(R4) → TRUE! (matcht met Y-as in cache)
+// → Direct nudging, geen ringbuffer
+```
+
+**Conclusie**: Je hebt gelijk - opnieuw stemmen op cache is zinloos. De **enige waarde** van de oude radiaal op eviction moment is als **partner** voor een nieuw kruisproduct met de nieuwe/andere radialen.
+Of: het kan stemmen op een duaal vlak van een cross 
+
+
+===
+**Je hebt gelijk dat we hier kunnen optimaliseren!** Ik begrijp je voorstel volledig. Hier is mijn samenvatting en analyse:
+
+---
+
+## **Begrepen: Nieuw Design Voorstel**
+
+### **Kernidee:**
+1. **Bij nieuwe radiaal `r[nieuw]`**: Eerst proberen een cross te maken met ringbuffer elementen
+2. **Als succesvol cross pair**: Voeg meteen toe aan cache, laat `r[nieuw]` daarop stemmen, done
+3. **Anders**: Voeg toe aan ringbuffer, geef evict-radiaal een laatste kans op **nieuwe** cache-entries
+
+### **Gedetailleerde Flow:**
+```
+Nieuwe radiaal komt binnen:
+1. Scan ringbuffer voor element met hoek > 70° tegen r[nieuw]
+2. Gevonden? → Maak cross → Voeg toe aan cache (laatste positie)
+3. Laat r[nieuw] stemmen op deze nieuwe cross
+4. Succes? → r[nieuw] is verwerkt, DONE
+5. Anders: plaats r[nieuw] in ringbuffer
+6. Evict-radiaal mag stemmen op recente cache-entries (count/weight < 15)
+```
+
+### **Variant A: "Eerste match" strategie**
+- Zoek eerste `j` waar `hoek(r[nieuw], ring[j]) > 70°`
+- Simpel, snelle beslissing
+- Mogelijk suboptimale cross (net boven 70°)
+
+### **Variant B: "Beste hoek" strategie**  
+- Zoek `j` met **maximale** hoek (dichtst bij 90°)
+- Stabielere, betere normaal
+- Vereist volledige scan van ringbuffer
+
+---
+
+## **GPU-Vriendelijkheid Analyse**
+
+### **Variant A (Eerste match):**
+**Voordelen:**
+- Sneller: gemiddeld minder checks nodig
+- Minder branching: eerste match → direct done
+- Beter voor warp-coherentie: threads stoppen vroeg
+
+**Nadelen:**
+- Minder stabiele cross (mogelijk net 71° in plaats van ~90°)
+- Meer cache-injecties van matige kwaliteit
+
+### **Variant B (Beste hoek):**
+**Voordelen:**
+- Betere kwaliteit cross (dichter bij 90° = stabieler)
+- Minder cache-ruis: alleen echt goede hypothesen
+- Mogelijk minder overall iteraties (betere cross → sneller leren)
+
+**Nadelen:**
+- Altijd volledige scan nodig (8 checks)
+- Meer divergentie: alle threads doen volledig werk
+- Complexere branching (max vinden vs early-out)
+
+---
+
+## **Mijn Aanbeveling: Variant B (Beste Hoek)**
+
+### **Redenen:**
+1. **Kwaliteit over kwantiteit**: Op GPU is kwaliteit van cross-producten **cruciaal**. Een cross van 71° kan verkeerde richtingen veroorzaken die lang blijven hangen in cache.
+
+2. **Cache-efficiëntie**: Betere cross → betere as → meer toekomstige matches → **minder cache-misses**. Dit compenseert de extra rekenkracht.
+
+3. **GPU-optimalisatie mogelijk**: De scan van 8 elementen kan:
+   - **Gepipelined worden**: Alle 8 dot-products parallel uitvoeren
+   - **Gevectoriseerd worden**: SIMD voor hoekberekeningen
+   - **Geen divergentie binnen warp**: Alle threads doen dezelfde 8 checks
+
+4. **Stapgrootte 1 is simpeler**: Geen complexe modulo 3 berekeningen, minder branching.
+
+### **Geoptimaliseerde Implementatie:**
+```cpp
+__device__ bool probeerDirecteCross(float3 r_nieuw) {
+    float beste_hoek = 0.0f;
+    int beste_idx = -1;
+    
+    // Parallelle hoekberekening (GPU-vriendelijk)
+    for (int i = 0; i < 8; i++) {
+        float cos_hoek = fabsf(dot(r_nieuw, Ring[i]));
+        float hoek = acosf(min(1.0f, cos_hoek));
+        
+        if (hoek > beste_hoek) {
+            beste_hoek = hoek;
+            beste_idx = i;
+        }
+    }
+    
+    // Check drempel
+    if (beste_hoek > 70.0f * DEG_TO_RAD) {  // ~1.2217 rad
+        // Maak cross
+        float3 cross_as = normalize(cross(r_nieuw, Ring[beste_idx]));
+        
+        // Injecteer in cache (laatste positie, evict oudste zwakke)
+        injecteerInCacheEinde(cross_as, init_weight=1.0f);
+        
+        // Probeer te stemmen op deze nieuwe cross
+        float gewicht = berekenBuisGewicht(r_nieuw, cross_as);
+        if (gewicht > MIN_DRUMPEL) {
+            nudgeAxisLaatste(cross_as, gewicht);
+            return true;  // SUCCES: r_nieuw verwerkt
+        }
+    }
+    
+    return false;  // GEEN cross mogelijk
+}
+```
+
+### **Evict-radiaal Optimale Stemming:**
+```cpp
+// Alleen stemmen op RECENTE cache entries
+__device__ bool geefEvictRadiaalLaatsteKans(float3 r_evict) {
+    // Scan cache VANAF EINDE (recentste eerst)
+    for (int i = CACHE_SIZE-1; i >= max(0, CACHE_SIZE-5); i--) {
+        if (cache.weights[i] < 15.0f) {  // Alleen nieuwe/zwakke
+            float gewicht = berekenBuisGewicht(r_evict, cache.axes[i]);
+            if (gewicht > MIN_DRUMPEL) {
+                nudgeAxis(i, r_evict, gewicht);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+```
+
+---
+
+## **Trade-off: GPU vs. Algoritmische Efficientie**
+
+| Metriek | Variant A | Variant B |
+|---------|-----------|-----------|
+| **GPU cycles** | **Lager** | Hoger |
+| **Cache kwaliteit** | Lager | **Beter** |
+| **Convergentie snelheid** | Mogelijk trager | **Sneller** |
+| **Warp divergentie** | **Minder** | Meer |
+| **Memory access** | **Minder** | Meer |
+
+**Conclusie**: Kies **Variant B** als:
+- Kwaliteit van buisassen cruciaal is
+- Cache-grootte beperkt is (beter 5 goede dan 10 matige)
+- Je GPU voldoende rekenkracht heeft
+
+Kies **Variant A** als:
+- Je absolute minimale latency nodig hebt
+- Cache-grootte groot genoeg is voor trial-and-error
+- Cross-kwaliteit minder kritiek is
+
+**Mijn stem** (DeepSeek): Variant B - de extra GPU cycles wegen op tegen de algoritmische winst in stabiliteit en snellere convergentie.
+
+===
+
+Je hebt gelijk! Laten we het simpel houden. Hier is de gecorrigeerde versie:
+📝 ADDENDUM: Vereenvoudigde Cache Implementatie
+I. Cache Management - Simpel en Effectief
+A. Basisprincipe: FIFO Evictie
+
+De cache is niet gesorteerd en gebruikt eenvoudige FIFO-achtige evictie:
+
+    Nieuwe assen krijgen startgewicht 1.0f
+
+    Ze worden altijd op laatste positie geplaatst
+
+    Bij volle cache wordt de oudste entry overschreven (botweg)
+
+    Geen bubble sort, geen complexe inserties
+
+B. Vereenvoudigde injecteerInCache
+cpp
+
+__device__ void injecteerInCache(float3 nieuwe_as) {
+    // 1. Bepaal injectie positie (laatste vrije of evict positie)
+    int inject_idx;
+    
+    if (cache_count < CACHE_SIZE) {
+        // Nog ruimte: voeg toe aan einde
+        inject_idx = cache_count;
+        cache_count++;
+    } else {
+        // Cache vol: overschrijf oudste (FIFO) of cyclisch
+        inject_idx = cache_next_evict;
+        cache_next_evict = (cache_next_evict + 1) % CACHE_SIZE;
+    }
+    
+    // 2. Botweg overschrijven (zelfs als hoger gewicht)
+    cache.axes[inject_idx] = nieuwe_as;
+    cache.weights[inject_idx] = 1.0f;      // Startgewicht = 1
+    cache.counts[inject_idx] = 1;          // Start count = 1
+}
+
+C. Evictie Gedrag - Bot Overschrijven
+cpp
+
+// Voorbeeld: CACHE_SIZE=5, cache_count=5 (vol)
+// cache_next_evict wijst naar oudste entry
+
+// Nieuwe as komt binnen:
+int evict_idx = cache_next_evict;  // bijv. positie 2
+float oud_weight = cache.weights[evict_idx];  // bijv. 15.3 (hoog!)
+
+// Overschrijf BOTWEG:
+cache.axes[evict_idx] = nieuwe_as;    // Oude as weg
+cache.weights[evict_idx] = 1.0f;      // Startgewicht reset
+cache.counts[evict_idx] = 1;          // Count reset
+
+cache_next_evict = (evict_idx + 1) % CACHE_SIZE;  // Update pointer
+
+Rationale:
+
+    Eenvoudiger op GPU (minder branching, minder memory moves)
+
+    Hooggewicht entries worden toch al bevestigd door vele stemmen
+
+    Nieuwe assen moeten zichzelf bewijzen, ongeacht wat ze vervangen
+
+    FIFO zorgt voor "fair" rouleren van cache slots
+
+II. Cache Zoeken (Vind Beste Match)
+Simplified findBestMatch (in tryMatchAndNudgeMainCache)
+cpp
+
+__device__ bool tryMatchAndNudgeMainCache(float3 n_in) {
+    float best_weight = MIN_NUDGE_THRESHOLD;
+    int best_idx = -1;
+    
+    // Simpele lineaire scan (geen sortering nodig)
+    for (int i = 0; i < cache_count; i++) {
+        float cos_theta = fabsf(dot(n_in, cache.axes[i]));
+        
+        // Kies max van cos³² (vlak) of sin³² (buis)
+        float w_flat = cos32_pow(cos_theta);
+        float w_tube = sin32_pow(acosf(cos_theta));
+        float w_final = fmaxf(w_flat, w_tube);
+        
+        if (w_final > best_weight) {
+            best_weight = w_final;
+            best_idx = i;
+        }
+    }
+    
+    if (best_idx != -1) {
+        // NUDGE met running average
+        float alpha = 1.0f / (cache.counts[best_idx] + 1.0f);
+        
+        // Gewicht door fit-kwaliteit
+        float3 gewogen_nieuwe = n_in * best_weight;
+        
+        cache.axes[best_idx] = normalize(
+            (1.0f - alpha) * cache.axes[best_idx] + 
+            alpha * gewogen_nieuwe
+        );
+        
+        cache.weights[best_idx] += best_weight;
+        cache.counts[best_idx]++;
+        
+        return true;  // Gestemd en genudged
+    }
+    
+    return false;  // Geen match → naar ringbuffer
+}
+
+III. Complete inkomendeRadiaal met Vereenvoudigde Cache
+cpp
+
+__device__ void inkomendeRadiaal(float3 nieuwe_radiaal) {
+    // 1. Probeer eerst directe cross met ringbuffer
+    if (ringCount >= 1) {  // Minstens 1 andere radiaal nodig
+        float beste_hoek = 0.0f;
+        int beste_idx = -1;
+        
+        // Zoek beste partner (dichtst bij 90°)
+        for (int i = 0; i < ringCount; i++) {
+            float cos_hoek = fabsf(dot(nieuwe_radiaal, Ring[i]));
+            float hoek = acosf(min(1.0f, cos_hoek));
+            
+            if (hoek > 1.2217f) {  // > 70°
+                float afstand_tot_90 = fabsf(hoek - 1.5708f);
+                if (afstand_tot_90 < fabsf(beste_hoek - 1.5708f)) {
+                    beste_hoek = hoek;
+                    beste_idx = i;
+                }
+            }
+        }
+        
+        if (beste_idx != -1) {
+            // Maak cross en injecteer
+            float3 cross_as = normalize(cross(nieuwe_radiaal, Ring[beste_idx]));
+            injecteerInCache(cross_as);
+            
+            // Laat nieuwe radiaal direct stemmen op deze cross
+            if (tryMatchAndNudgeMainCache(nieuwe_radiaal)) {
+                return;  // KLAAR
+            }
+        }
+    }
+    
+    // 2. Buffer nog niet vol? Voeg toe
+    if (ringCount < 8) {
+        Ring[posNext] = nieuwe_radiaal;
+        ringCount++;
+        posNext = (posNext + 1) & 7;
+        return;
+    }
+    
+    // 3. Buffer VOL: evict-radiaal krijgt laatste kans
+    int evict_pos = posNext;  // FIFO: oudste
+    float3 evict_radiaal = Ring[evict_pos];
+    
+    // Probeer cross met andere buffer elementen
+    for (int i = 0; i < 8; i++) {
+        if (i == evict_pos) continue;
+        
+        float cos_hoek = fabsf(dot(evict_radiaal, Ring[i]));
+        if (cos_hoek < 0.342f) {  // > 70°
+            float3 kruis = normalize(cross(evict_radiaal, Ring[i]));
+            
+            // Valideer orthogonaal
+            float w1 = sin32_pow(acosf(fabsf(dot(evict_radiaal, kruis))));
+            float w2 = sin32_pow(acosf(fabsf(dot(Ring[i], kruis))));
+            
+            if ((w1 + w2) * 0.5f > 0.3f) {  // T_VALIDATIE
+                injecteerInCache(kruis);
+                
+                // Buffer reset
+                ringCount = 0;
+                posNext = 0;
+                Ring[0] = nieuwe_radiaal;
+                ringCount = 1;
+                posNext = 1;
+                return;
+            }
+        }
+    }
+    
+    // 4. Geen succes: overschrijf
+    Ring[posNext] = nieuwe_radiaal;
+    posNext = (posNext + 1) & 7;
+}
+
+IV. Parameter Updates
+cpp
+
+// config.h / consts
+#define CACHE_SIZE          16      // Aantal cache slots
+#define INIT_WEIGHT         1.0f    // Startgewicht nieuwe as
+#define INIT_COUNT          1       // Start count
+#define MIN_NUDGE_THRESHOLD 0.1f    // Minimale stemgewicht
+#define T_VALIDATIE         0.3f    // Validatiedrempel
+
+V. Belangrijkste Vereenvoudigingen
+Feature	Oud (Complex)	Nieuw (Simpel)
+Cache sortering	Descending op weight	Geen sortering
+Injectie positie	Gesorteerde insert	Altijd laatste/evict
+Evictie	Laagste weight	FIFO (oudste)
+Startgewicht	Variabel (0.1)	Vast (1.0)
+Bubble swap	Complexe herschikking	Direct overschrijven
+Voordelen:
+
+    GPU-vriendelijker: Minder branching, minder memory operations
+
+    Eenvoudiger debuggen: Cache staat in invoervolgorde
+
+    Voorspelbaarder: FIFO evictie is deterministisch
+
+    Minder overhead: Geen sortering bij elke injectie
+
+Nadeel:
+
+    Minder "optimale" cache inhoud (hooggewicht entries kunnen evicted worden)
+
+    Acceptabel omdat: Hooggewicht entries al veel stemmen hebben gehad en hun richting al bevestigd is in andere chunks
+
+VI. Impact op Bestaande Architectuur
+
+Deze vereenvoudiging verandert niets aan de kernarchitectuur:
+
+    ✅ Producer (k_generate_normals) blijft identiek
+
+    ✅ Voter logica (tryMatchAndNudgeMainCache) blijft identiek
+
+    ✅ Ringbuffer sweep blijft identiek
+
+    ✅ Nudging formule blijft identiek
+
+Alleen de cache management wordt simpeler, wat de GPU performance verbetert zonder functionaliteit te verliezen.
+
+Implementatie motto: "Keep it simple, stupid" voor maximale GPU-efficiëntie!
+
+
+===
+Dit bevat verouderde informatie en enkele nieuwigheden die geïntegreerd moeten worden. Hier is de analyse:
+🚫 VEROUDERDE INFORMATIE:
+1. Complexe Cache Management (OUD)
+
+    tryMatchAndNudgeCache met forward/reverse modes → OVERRULED door FIFO evictie
+
+    CACHE_SIZE-5 limit en weights[i] >= 15.0f checks → Niet meer relevant met vereenvoudigde cache
+
+    VoteAndNudgeAxis met weight/count update → Niet nodig volgens laatste beslissing
+
+2. Branch Divergence Optimalisatie (OUD)
+
+    Forward vs Reverse functies voor warp divergence → Overkill voor K=16
+
+    Atomic operations overweging → Niet nodig met serial processing
+
+3. Complexe Config Management (Deels OUD)
+
+    Hiërarchische structs met sub-structs → Te complex volgens nieuwe vereenvoudiging
+
+    JSON-loading via C# DLL → YAGNI voor nu
+
+    GUI integratie → Definitief overkill
+
+✅ NOG WEL RELEVANTE NIEUWIJGHEDEN:
+1. Constante Management Principes (NIEUW & WAAR)
+
+    Geen magische getallen - alles in benoemde config variabelen ✅
+
+    Hiërarchische groepering per functie/domein ✅ (maar vereenvoudigd)
+
+    JSON configureerbaarheid (toekomst) ✅
+
+    C++ ⇄ C# compatibiliteit (optioneel) ✅
+
+2. Nudge + Stem Update Logica (GEDEELTELIJK WAAR)
+
+    Nudging formule blijft: V_nieuw = (1-α)·V_oud + α·n_nieuw ✅
+
+    α = 1/(count + 1) ✅
+
+    MAAR: VoteAndNudgeAxis → simpelere implementatie zonder complexe weight tracking
+
+🔄 HOE DIT IN HET ADDENDUM PAST:
+Wat WEL behouden blijft:
+cpp
+
+// Vereenvoudigde versie van constantenbeheer
+struct RdvConfig {
+    // Boeren-Ring Filter
+    float r1_sq = 0.000001f;
+    float r2_sq = 0.0016f;
+    float eps_sq = 1e-6f;
+    float min_area_sq = 1e-12f;
+    
+    // RDV Voter
+    float min_nudge_threshold = 0.1f;
+    int cache_size = 16;
+    int ring_buffer_size = 8;
+    float init_weight = 1.0f;  // Startgewicht nieuwe as
+};
+
+Wat VERVALLEN is:
+cpp
+
+// ❌ NIET MEER NODIG:
+enum LoopDirection { FORWARD, REVERSE };
+__device__ bool tryMatchAndNudgeCache(..., LoopDirection direction);
+
+// ❌ NIET MEER NODIG:
+struct ObjectTypeSettings { struct Pipe, Plane, Elbow; };
+
+// ❌ NIET MEER NODIG:
+__device__ void VoteAndNudgeAxis(...);  // Wordt geïntegreerd in tryMatchAndNudgeMainCache
+
+📋 TABEL: WAT BLIJFT, WAT GAAT:
+Concept	Status	Reden
+Forward/Reverse modes	❌ VERWIJDERD	Cache is FIFO, geen speciale evict-stemming meer
+Atomic operations	❌ VERWIJDERD	Serial processing is voldoende voor K=16
+Weight >= 15.0f cutoff	❌ VERWIJDERD	Cache evictie is FIFO, ongeacht weight
+JSON loading C# DLL	⏸️ UITGESTELD	YAGNI - handmatige config is genoeg
+Hiërarchische constanten	✅ BEHOUDEN	Maar vereenvoudigd tot één struct
+Geen magische getallen	✅ BEHOUDEN	Alles in config struct
+Nudging formule	✅ BEHOUDEN	V_nieuw = (1-α)·V_oud + α·n_nieuw
+📝 CONCRETE AANPASSINGEN VOOR ADDENDUM:
+
+Aanpassen in addendum Sectie II:
+cpp
+
+// VERANDER VAN:
+__device__ void VoteAndNudgeAxis(...) { ... }
+
+// NAAR (integreer in tryMatchAndNudgeMainCache):
+__device__ bool tryMatchAndNudgeMainCache(float3 n_in) {
+    // ... vind beste match ...
+    if (best_idx != -1) {
+        // SIMPEL: Nudge + stem update
+        float alpha = 1.0f / (cache.counts[best_idx] + 1.0f);
+        cache.axes[best_idx] = normalize(
+            (1.0f - alpha) * cache.axes[best_idx] + 
+            alpha * n_in * best_weight  // gewogen door fit
+        );
+        cache.weights[best_idx] += best_weight;  // Eenvoudige tracking
+        cache.counts[best_idx]++;
+        return true;
+    }
+    return false;
+}
+
+Aanpassen in addendum Sectie IV (Config):
+cpp
+
+// VERANDER VAN complexe sub-structs:
+struct Global { ... };
+struct RingFilter { ... };
+struct RdvVoter { ... };
+struct ObjectType { ... };
+
+// NAAR eenvoudige flat struct:
+struct RdvConfig {
+    // Alleen de essentiele constanten
+    float r1_sq = 0.000001f;
+    float r2_sq = 0.0016f;
+    float eps_sq = 1e-6f;
+    float min_area_sq = 1e-12f;
+    float min_nudge_threshold = 0.1f;
+    int cache_size = 16;
+    int ring_buffer_size = 8;
+    float init_weight = 1.0f;
+    float cos_70 = 0.3420201433f;
+    float cos_75 = 0.2588190451f;
+    float cos_85 = 0.0871557427f;
+};
+
+🎯 CONCLUSIE:
+
+Het addendum moet geüpdatet worden om:
+
+    Forward/Reverse modi te verwijderen - vervangen door FIFO cache
+
+    VoteAndNudgeAxis te integreren in de main functie
+
+    Config struct te vereenvoudigen tot flat structuur
+
+    Alle atomic/branch divergence optimalisaties te verwijderen
+
+Wat wél blijft:
+
+    Vereenvoudigde constantenbeheer
+
+    Nudging formule basis
+
+    FIFO cache principe
+
+    Ringbuffer beste-hoek scan
+
+Bottom line: De informatie in de prompt is deels verouderd door de "keep it simple" beslissing van het laatste addendum. Alleen de algemene principes over config management blijven relevant, niet de specifieke implementaties
