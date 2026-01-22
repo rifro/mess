@@ -1,10 +1,7 @@
-#include "PluginAutoFit_Clean/include/autofit_impl.h"
-#include "PluginAutoFit_Clean/src/rdv/include/normal_generation.cuh"
-#include "PluginAutoFit_Clean/src/rdv/include/rdv_voter.cuh"
-#include "ccPointCloud.h"
-#include "ccMainAppInterface.h"
-
-#include <memory>
+#include "autofit_impl.h"
+#include "includes.h"
+#include "includes.cuh"
+#include "strict.h"
 
 namespace Bocari
 {
@@ -47,7 +44,7 @@ namespace Bocari
         splitPointCloudToSoa(subsampledCloud.get(), *m_dPointsX, *m_dPointsY, *m_dPointsZ);
 
         // 4. Launch CUDA kernel to generate normals
-        k_generateNormals(*m_dPointsX, *m_dPointsY, *m_dPointsZ, *m_dPointLabels, *m_dNormals, *m_dNormalsCount);
+        h_generateNormals(*m_dPointsX, *m_dPointsY, *m_dPointsZ, *m_dPointLabels, *m_dNormals, *m_dNormalsCount);
 
         // 5. Prepare for and launch RDV Voter kernel
         m_dAxisAccumulators->allocate(getConfig().m_rdvVoter.m_cacheSize);
@@ -56,7 +53,7 @@ namespace Bocari
         m_dRingBuffer->allocate(getConfig().m_rdvVoter.m_ringBufferSize);
         m_dRingBufferPosition->memset(0);
 
-        k_adaptiveRdvVoting(*m_dNormals, *m_dNormalsCount, *m_dAxisAccumulators, *m_dRingBuffer, *m_dRingBufferPosition);
+        h_adaptiveRdvVoting(*m_dNormals, *m_dNormalsCount, *m_dAxisAccumulators, *m_dRingBuffer, *m_dRingBufferPosition);
     }
 
     std::unique_ptr<ccPointCloud> AutoFitImpl::voxelSample(ccPointCloud* inputCloud)

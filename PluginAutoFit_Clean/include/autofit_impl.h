@@ -1,15 +1,14 @@
 #pragma once
-#include <memory>
+#include "includes.h"
+#include "strict.h"
 
-// Forward declarations
-class ccPointCloud;
-class ccMainAppInterface;
+// Forward declarations are now in includes.h
 
 namespace Bocari
 {
-    // Forward declare the DeviceBuffer from our rdv module
+    // Forward declarations from the rdv module
     template <typename T> class DeviceBuffer;
-    struct Vec3f;
+    struct RdvAxisAccumulator;
 
     class AutoFitImpl
     {

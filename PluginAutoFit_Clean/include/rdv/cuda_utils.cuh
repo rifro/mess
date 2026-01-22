@@ -12,21 +12,6 @@ namespace Bocari
         return a.m_x * b.m_x + a.m_y * b.m_y + a.m_z * b.m_z;
     }
 
-    __device__ inline Vec3f subtract(const Vec3f& a, const Vec3f& b)
-    {
-        return {a.m_x - b.m_x, a.m_y - b.m_y, a.m_z - b.m_z};
-    }
-
-    __device__ inline Vec3f add(const Vec3f& a, const Vec3f& b)
-    {
-        return {a.m_x + b.m_x, a.m_y + b.m_y, a.m_z + b.m_z};
-    }
-
-    __device__ inline Vec3f scale(const Vec3f& v, float s)
-    {
-        return {v.m_x * s, v.m_y * s, v.m_z * s};
-    }
-
     __device__ inline Vec3f cross(const Vec3f& a, const Vec3f& b)
     {
         return {a.m_y * b.m_z - a.m_z * b.m_y, a.m_z * b.m_x - a.m_x * b.m_z, a.m_x * b.m_y - a.m_y * b.m_x};
@@ -34,8 +19,7 @@ namespace Bocari
 
     __device__ inline Vec3f normalize(const Vec3f& v)
     {
-        float invLen = rsqrtf(dot(v, v));
-        return scale(v, invLen);
+        return v * rsqrtf(dot(v, v));
     }
 
 } // namespace Bocari
