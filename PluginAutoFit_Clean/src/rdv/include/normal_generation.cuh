@@ -1,4 +1,5 @@
 #pragma once
+#include "strict.h"
 #include "device_buffer.cuh"
 #include "rdv_types.h"
 
@@ -14,7 +15,7 @@ namespace Bocari
      * @param d_normals Output device buffer for the calculated normals.
      * @param d_normalsCount Output device buffer for the total count of generated normals.
      */
-    void generateNormals(
+    void k_generateNormals(
         const DeviceBuffer<float>& d_pointsX,
         const DeviceBuffer<float>& d_pointsY,
         const DeviceBuffer<float>& d_pointsZ,

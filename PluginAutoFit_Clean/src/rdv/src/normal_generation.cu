@@ -7,7 +7,9 @@
 // Forward declaration of the kernel
 namespace Bocari
 {
-    __global__ void k_generateNormalsKernel(
+namespace detail
+{
+    __global__ void k_generateNormals(
         const float* __restrict__ d_pointsX,
         const float* __restrict__ d_pointsY,
         const float* __restrict__ d_pointsZ,
@@ -18,9 +20,10 @@ namespace Bocari
         u32 maxNormals
     );
 }
+}
 
 // Host function implementation
-void Bocari::generateNormals(
+void Bocari::k_generateNormals(
     const DeviceBuffer<float>& d_pointsX,
     const DeviceBuffer<float>& d_pointsY,
     const DeviceBuffer<float>& d_pointsZ,
@@ -38,7 +41,7 @@ void Bocari::generateNormals(
     const u32 blockSize = 256;
     const u32 gridSize = (pointCount + blockSize - 1) / blockSize;
 
-    k_generateNormalsKernel<<<gridSize, blockSize>>>(
+    detail::k_generateNormals<<<gridSize, blockSize>>>(
         d_pointsX.data(),
         d_pointsY.data(),
         d_pointsZ.data(),
@@ -88,7 +91,7 @@ namespace Bocari
     }
 
 
-    __global__ void k_generateNormalsKernel(
+    __global__ void detail::k_generateNormals(
         const float* __restrict__ d_pointsX,
         const float* __restrict__ d_pointsY,
         const float* __restrict__ d_pointsZ,

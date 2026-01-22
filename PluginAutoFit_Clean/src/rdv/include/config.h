@@ -1,4 +1,5 @@
 #pragma once
+#include "strict.h"
 #include "rdv_types.h"
 
 namespace Bocari

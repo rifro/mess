@@ -1,4 +1,5 @@
 #pragma once
+#include "strict.h"
 #include "rdv_types.h"
 
 namespace Bocari
@@ -9,7 +10,7 @@ namespace Bocari
      */
     struct Matrix3x3
     {
-        float m[3][3];
+        float m_elements[3][3];
     };
 
     /**

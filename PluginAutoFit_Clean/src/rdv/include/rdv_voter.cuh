@@ -1,4 +1,5 @@
 #pragma once
+#include "strict.h"
 #include "device_buffer.cuh"
 #include "rdv_types.h"
 
@@ -17,7 +18,7 @@ namespace Bocari
      * @param d_ringBuffer Device buffer for storing unmatched normals.
      * @param d_ringBufferPosition Atomic counter for the current position in the ring buffer.
      */
-    void adaptiveRdvVoting(
+    void k_adaptiveRdvVoting(
         const DeviceBuffer<Vec3f>& d_normals,
         const DeviceBuffer<u32>& d_normalsCount,
         DeviceBuffer<RdvAxisAccumulator>& d_axisAccumulators,
