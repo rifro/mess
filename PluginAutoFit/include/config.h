@@ -10,8 +10,8 @@ namespace Bocari
     // ==================================================================
     struct RingFilterConfig
     {
-        float m_r1sq         = pow2(0.001f); // 1 mm
-        float m_r2sq         = pow2(0.07f);  // 7 cm
+        float m_r1Sq         = pow2(0.001f); // 1 mm
+        float m_r2Sq         = pow2(0.07f);  // 7 cm
         float m_epsSq        = pow2(0.001f); // 1 mm tolerance
         float m_minAreaSq    = pow2(1e-6f);  
         float m_mortonLeapSq = pow2(10.0f);  // 10 m leap threshold
