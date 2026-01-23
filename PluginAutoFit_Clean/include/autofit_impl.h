@@ -2,14 +2,8 @@
 #include "includes.h"
 #include "strict.h"
 
-// Forward declarations are now in includes.h
-
 namespace Bocari
 {
-    // Forward declarations from the rdv module
-    template <typename T> class DeviceBuffer;
-    struct RdvAxisAccumulator;
-
     class AutoFitImpl
     {
     public:

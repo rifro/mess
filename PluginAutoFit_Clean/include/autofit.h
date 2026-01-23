@@ -2,8 +2,6 @@
 #include "includes.h"
 #include "strict.h"
 
-// Forward declarations are now in includes.h
-
 class AutoFitPlugin : public QObject, public ccStdPluginInterface
 {
     Q_OBJECT

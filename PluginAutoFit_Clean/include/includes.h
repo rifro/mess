@@ -6,19 +6,19 @@
 #include <vector>
 
 // --- Qt ---
+#include <QAction>
+#include <QIcon>
 #include <QObject>
 #include <QtPlugin>
-#include <QAction>
 #include <QString>
-#include <QIcon>
 
 // --- CloudCompare ---
-#include "ccStdPluginInterface.h"
 #include "ccHObject.h"
-#include "ccPointCloud.h"
 #include "ccMainAppInterface.h"
+#include "ccPointCloud.h"
+#include "ccStdPluginInterface.h"
 
 // --- Eigen Headers ---
-#include "vec3.h"
-#include "rdv/rdv_types.h"
 #include "rdv/kalman_filter.h"
+#include "rdv/rdv_types.h"
+#include "vec3.h"
