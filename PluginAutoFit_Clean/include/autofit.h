@@ -1,12 +1,6 @@
 #pragma once
-#include <QObject>
-#include <QtPlugin>
-#include "ccStdPluginInterface.h"
-#include "ccHObject.h"
-
-// Forward declarations
-class ccPointCloud;
-namespace Bocari { class AutoFitImpl; }
+#include "includes.h"
+#include "strict.h"
 
 class AutoFitPlugin : public QObject, public ccStdPluginInterface
 {

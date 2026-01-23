@@ -1,6 +1,6 @@
 #pragma once
+#include "includes.h"
 #include "strict.h"
-#include <cstdint>
 
 namespace Bocari
 {
@@ -11,11 +11,7 @@ namespace Bocari
     using u64 = uint64_t;
     using i32 = int32_t;
 
-    // A simple 3D vector struct
-    struct Vec3f { float m_x, m_y, m_z; };
-
     // Accumulator for an RDV axis, containing the sum of vectors and the vote count.
-    // This is the clean replacement for the old 'OtasAccu'.
     struct RdvAxisAccumulator
     {
         Vec3f m_vectorSum;
