@@ -1,7 +1,6 @@
 #pragma once
+#include "includes.h"
 #include "strict.h"
-#include <cstdint>
-#include "vec3.h"
 
 namespace Bocari
 {

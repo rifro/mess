@@ -58,8 +58,8 @@
 #include <QtGlobal> // For Qt::white etc.
 
 // --- Eigen Headers ---
-#include "rdv/kalman_filter.h"
-#include "rdv/rdv_types.h"
+#include "kalman_filter.h"
+#include "rdv_types.h"
 #include "types.h" // Legacy types, to be merged with rdv_types
 #include "vec3.h"
 

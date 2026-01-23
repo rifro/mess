@@ -1,4 +1,5 @@
 #pragma once
+#include "strict.h"
 
 namespace Bocari
 {

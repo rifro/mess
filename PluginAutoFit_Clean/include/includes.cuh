@@ -4,8 +4,8 @@
 #include <cuda_runtime.h>
 
 // --- Eigen CUDA Headers ---
-#include "rdv/config.h"
-#include "rdv/cuda_utils.cuh"
-#include "rdv/device_buffer.cuh"
-#include "rdv/normal_generation.cuh"
-#include "rdv/rdv_voter.cuh"
+#include "config.h"
+#include "cuda_utils.cuh"
+#include "device_buffer.cuh"
+#include "normal_generation.cuh"
+#include "rdv_voter.cuh"

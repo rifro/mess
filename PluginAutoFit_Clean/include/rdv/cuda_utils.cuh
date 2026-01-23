@@ -1,7 +1,6 @@
 #pragma once
+#include "includes.cuh"
 #include "strict.h"
-#include "rdv_types.h"
-#include <cuda_runtime.h>
 
 namespace Bocari
 {
