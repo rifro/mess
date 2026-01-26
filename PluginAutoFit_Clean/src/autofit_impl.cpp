@@ -7,74 +7,74 @@
 
 namespace Bocari
 {
-    AutoFitImpl::AutoFitImpl() : m_app(nullptr), m_selectedCloud(nullptr)
+    AutoFitImpl::AutoFitImpl() : app(nullptr), selectedCloud(nullptr)
     {
         // Initialize smart pointers for CUDA buffers
-        m_dPointsX = std::make_unique<DeviceBuffer<float>>(0);
-        m_dPointsY = std::make_unique<DeviceBuffer<float>>(0);
-        m_dPointsZ = std::make_unique<DeviceBuffer<float>>(0);
-        m_dPointLabels = std::make_unique<DeviceBuffer<u8>>(0);
-        m_dNormals = std::make_unique<DeviceBuffer<Vec3f>>(0);
-        m_dNormalsCount = std::make_unique<DeviceBuffer<u32>>(1);
-        m_dAxisAccumulators = std::make_unique<DeviceBuffer<RdvAxisAccumulator>>(0);
-        m_dRingBuffer = std::make_unique<DeviceBuffer<Vec3f>>(0);
-        m_dRingBufferPosition = std::make_unique<DeviceBuffer<u32>>(1);
+        d_pointsX = std::make_unique<DeviceBuffer<float>>(0);
+        d_pointsY = std::make_unique<DeviceBuffer<float>>(0);
+        d_pointsZ = std::make_unique<DeviceBuffer<float>>(0);
+        d_pointLabels = std::make_unique<DeviceBuffer<u8>>(0);
+        d_normals = std::make_unique<DeviceBuffer<Vec3f>>(0);
+        d_normalsCount = std::make_unique<DeviceBuffer<u32>>(1);
+        d_axisAccumulators = std::make_unique<DeviceBuffer<RdvAxisAccumulator>>(0);
+        d_ringBuffer = std::make_unique<DeviceBuffer<Vec3f>>(0);
+        d_ringBufferPosition = std::make_unique<DeviceBuffer<u32>>(1);
     }
 
     AutoFitImpl::~AutoFitImpl() = default;
 
     void AutoFitImpl::performFit(ccMainAppInterface* app, ccPointCloud* selectedCloud)
     {
-        m_app = app;
-        m_selectedCloud = selectedCloud;
+        this->app = app;
+        this->selectedCloud = selectedCloud;
 
-        if (!m_selectedCloud) return;
+        if (!this->selectedCloud) return;
 
         // 1. Update the constant configuration on the GPU
         h_updateConstantConfig(getConfig());
 
         // 2. Subsample the point cloud to a manageable size
-        auto subsampledCloud = voxelSample(m_selectedCloud);
+        auto subsampledCloud = voxelSample(this->selectedCloud);
         const u32 pointCount = subsampledCloud->size();
         if (pointCount == 0) return;
 
         // 3. Allocate or resize CUDA buffers
-        m_dPointsX->allocate(pointCount);
-        m_dPointsY->allocate(pointCount);
-        m_dPointsZ->allocate(pointCount);
-        m_dPointLabels->allocate(pointCount);
-        m_dNormals->allocate(pointCount); // Max possible normals is pointCount
+        d_pointsX->allocate(pointCount);
+        d_pointsY->allocate(pointCount);
+        d_pointsZ->allocate(pointCount);
+        d_pointLabels->allocate(pointCount);
+        d_normals->allocate(pointCount); // Max possible normals is pointCount
 
         // 4. Split point cloud into Structure-of-Arrays (SoA) and upload to GPU
-        splitPointCloudToSoa(subsampledCloud.get(), *m_dPointsX, *m_dPointsY, *m_dPointsZ);
+        splitPointCloudToSoa(subsampledCloud.get(), *d_pointsX, *d_pointsY, *d_pointsZ);
 
         // 5. Launch CUDA kernel to generate normals
-        h_generateNormals(*m_dPointsX, *m_dPointsY, *m_dPointsZ, pointCount, *m_dPointLabels, *m_dNormals, *m_dNormalsCount);
+        h_generateNormals(*d_pointsX, *d_pointsY, *d_pointsZ, pointCount, *d_pointLabels, *d_normals, *d_normalsCount);
 
         // 6. Prepare for and launch RDV Voter kernel
-        m_dAxisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
-        m_dAxisAccumulators->memset(0);
+        d_axisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
+        d_axisAccumulators->memset(0);
 
-        m_dRingBuffer->allocate(getConfig().rdvVoter.ringBufferSize);
-        m_dRingBufferPosition->memset(0);
+        d_ringBuffer->allocate(getConfig().rdvVoter.ringBufferSize);
+        d_ringBufferPosition->memset(0);
 
-        h_adaptiveRdvVoting(*m_dNormals, *m_dNormalsCount, *m_dAxisAccumulators, *m_dRingBuffer, *m_dRingBufferPosition);
+        h_adaptiveRdvVoting(*d_normals, *d_normalsCount, *d_axisAccumulators, *d_ringBuffer, *d_ringBufferPosition);
 
         // 7. Copy results back to the host
         const u32 axisCount = getConfig().rdvVoter.cacheSize;
         std::vector<RdvAxisAccumulator> h_axisAccumulators(axisCount);
-        cudaMemcpy(h_axisAccumulators.data(), m_dAxisAccumulators->data(), axisCount * sizeof(RdvAxisAccumulator), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_axisAccumulators.data(), d_axisAccumulators->data(), axisCount * sizeof(RdvAxisAccumulator), cudaMemcpyDeviceToHost);
 
         // Placeholder: Log the results to the console to verify data transfer
-        if (m_app)
+        if (this->app)
         {
-            m_app->dispToConsole("AutoFit: Successfully retrieved results from GPU.", ccMainAppInterface::STD_CONSOLE_MESSAGE);
+            this->app->dispToConsole("AutoFit: Successfully retrieved results from GPU.", ccMainAppInterface::STD_CONSOLE_MESSAGE);
             for (u32 i = 0; i < axisCount; ++i)
             {
                 if (h_axisAccumulators[i].m_voteCount > 0)
                 {
                     Vec3f axis = normalize(h_axisAccumulators[i].m_vectorSum);
-                    m_app->dispToConsole(QString("  - Axis %1: votes=%2, dir=(%3, %4, %5)")
+                    this->app->dispToConsole(QString("  - Axis %1: votes=%2, dir=(%3, %4, %5)")
                                              .arg(i)
                                              .arg(h_axisAccumulators[i].m_voteCount)
                                              .arg(axis.m_x)

@@ -21,19 +21,19 @@ namespace Bocari
                                   DeviceBuffer<float>& d_z);
 
         // Member variables
-        ccMainAppInterface* m_app;
-        ccPointCloud* m_selectedCloud;
+        ccMainAppInterface* app;
+        ccPointCloud* selectedCloud;
 
         // CUDA-related members
-        std::unique_ptr<DeviceBuffer<float>> m_dPointsX;
-        std::unique_ptr<DeviceBuffer<float>> m_dPointsY;
-        std::unique_ptr<DeviceBuffer<float>> m_dPointsZ;
-        std::unique_ptr<DeviceBuffer<u8>> m_dPointLabels;
-        std::unique_ptr<DeviceBuffer<Vec3f>> m_dNormals;
-        std::unique_ptr<DeviceBuffer<u32>> m_dNormalsCount;
-        std::unique_ptr<DeviceBuffer<RdvAxisAccumulator>> m_dAxisAccumulators;
-        std::unique_ptr<DeviceBuffer<Vec3f>> m_dRingBuffer;
-        std::unique_ptr<DeviceBuffer<u32>> m_dRingBufferPosition;
+        std::unique_ptr<DeviceBuffer<float>> d_pointsX;
+        std::unique_ptr<DeviceBuffer<float>> d_pointsY;
+        std::unique_ptr<DeviceBuffer<float>> d_pointsZ;
+        std::unique_ptr<DeviceBuffer<u8>> d_pointLabels;
+        std::unique_ptr<DeviceBuffer<Vec3f>> d_normals;
+        std::unique_ptr<DeviceBuffer<u32>> d_normalsCount;
+        std::unique_ptr<DeviceBuffer<RdvAxisAccumulator>> d_axisAccumulators;
+        std::unique_ptr<DeviceBuffer<Vec3f>> d_ringBuffer;
+        std::unique_ptr<DeviceBuffer<u32>> d_ringBufferPosition;
     };
 
 } // namespace Bocari
