@@ -34,7 +34,7 @@ namespace Bocari
         Vec3f side1 = p2 - p1;
         Vec3f side2 = p3 - p1;
         Vec3f crossProd = cross(side1, side2);
-        return dot(crossProd, crossProd) < d_config.m_ringFilter.m_minAreaSq;
+        return dot(crossProd, crossProd) < d_config.ringFilter.minAreaSq;
     }
 
     /**
@@ -53,7 +53,7 @@ namespace Bocari
         float d = dot(normal, p1);
         float distanceSq = powf(dot(normal, pTest) - d, 2);
 
-        bool success = distanceSq < d_config.m_ringFilter.m_epsilonSq;
+        bool success = distanceSq < d_config.ringFilter.epsilonSq;
         if (success)
         {
             outNormal = normal;
@@ -129,9 +129,9 @@ namespace Bocari
             Vec3f diff = pNeighbor - pCenter;
             float distSq = dot(diff, diff);
 
-            if (distSq <= d_config.m_ringFilter.m_maxRadiusSq)
+            if (distSq <= d_config.ringFilter.maxRadiusSq)
             {
-                if (distSq > d_config.m_ringFilter.m_minRadiusSq)
+                if (distSq > d_config.ringFilter.minRadiusSq)
                 {
                     if (ringCount < 4)
                     {

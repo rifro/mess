@@ -44,17 +44,17 @@ namespace Bocari
      */
     __device__ bool tryMatchAndNudge(const Vec3f& normal, RdvAxisAccumulator* __restrict__ d_accumulators)
     {
-        float maxWeight = d_config.m_rdvVoter.m_minNudgeThreshold;
+        float maxWeight = d_config.rdvVoter.minNudgeThreshold;
         int bestSlot = -1;
 
-        for (u32 i = 0; i < d_config.m_rdvVoter.m_cacheSize; ++i)
+        for (u32 i = 0; i < d_config.rdvVoter.cacheSize; ++i)
         {
             if (d_accumulators[i].m_voteCount == 0) continue;
 
             Vec3f axisDirection = normalize(d_accumulators[i].m_vectorSum);
             float cosTheta = fabsf(dot(normal, axisDirection));
 
-            if (cosTheta < d_config.m_rdvVoter.m_cosCutoff)
+            if (cosTheta < d_config.rdvVoter.cosCutoff)
             {
                 float weight = calculatePerpendicularityWeight(cosTheta);
                 if (weight > maxWeight)
@@ -69,7 +69,7 @@ namespace Bocari
         {
             u32 oldCount = atomicAdd(&d_accumulators[bestSlot].m_voteCount, 1);
             // The learning rate `alpha` decreases as more votes are cast, stabilizing the axis.
-            float alpha = 1.0f / (oldCount + d_config.m_rdvVoter.m_initialVoteCount);
+            float alpha = 1.0f / (oldCount + d_config.rdvVoter.initialVoteCount);
             Vec3f nudge = normal * (alpha * maxWeight);
             atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_x, nudge.m_x);
             atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_y, nudge.m_y);
@@ -159,7 +159,7 @@ namespace Bocari
              * its orientation. It is disabled by default to favor stability over utilizing
              * every last piece of data.
              */
-            // if (ringBufferIndex >= d_config.m_rdvVoter.m_ringBufferSize) {
+            // if (ringBufferIndex >= d_config.rdvVoter.ringBufferSize) {
             //     tryMatchAndNudge(evictedNormal, d_axisAccumulators);
             // }
         }

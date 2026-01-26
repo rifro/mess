@@ -52,16 +52,16 @@ namespace Bocari
         h_generateNormals(*m_dPointsX, *m_dPointsY, *m_dPointsZ, pointCount, *m_dPointLabels, *m_dNormals, *m_dNormalsCount);
 
         // 6. Prepare for and launch RDV Voter kernel
-        m_dAxisAccumulators->allocate(getConfig().m_rdvVoter.m_cacheSize);
+        m_dAxisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
         m_dAxisAccumulators->memset(0);
 
-        m_dRingBuffer->allocate(getConfig().m_rdvVoter.m_ringBufferSize);
+        m_dRingBuffer->allocate(getConfig().rdvVoter.ringBufferSize);
         m_dRingBufferPosition->memset(0);
 
         h_adaptiveRdvVoting(*m_dNormals, *m_dNormalsCount, *m_dAxisAccumulators, *m_dRingBuffer, *m_dRingBufferPosition);
 
         // 7. Copy results back to the host
-        const u32 axisCount = getConfig().m_rdvVoter.m_cacheSize;
+        const u32 axisCount = getConfig().rdvVoter.cacheSize;
         std::vector<RdvAxisAccumulator> h_axisAccumulators(axisCount);
         cudaMemcpy(h_axisAccumulators.data(), m_dAxisAccumulators->data(), axisCount * sizeof(RdvAxisAccumulator), cudaMemcpyDeviceToHost);
 
