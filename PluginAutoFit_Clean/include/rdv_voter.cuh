@@ -4,16 +4,16 @@ namespace Bocari
 {
     /**
      * @brief Launches the CUDA kernel for adaptive Radial Disk Voting (RDV).
+     * @details This host function orchestrates the RDV process. It retrieves the number
+     * of normals from the GPU (since it's computed by a previous kernel), calculates
+     * the required CUDA grid size, and then launches the k_adaptiveRdvVoterKernel
+     * to perform the actual axis voting and refinement.
      *
-     * This kernel takes a list of surface normals and "votes" for dominant axes.
-     * Normals that match an existing axis "nudge" it, refining its direction.
-     * Normals that don't match are placed in a ring buffer for potential future use.
-     *
-     * @param d_normals Input device buffer of surface normals.
-     * @param d_normalsCount Device buffer containing the count of valid normals.
-     * @param d_axisAccumulators Device buffer of axis accumulators to be updated.
-     * @param d_ringBuffer Device buffer for storing unmatched normals.
-     * @param d_ringBufferPosition Atomic counter for the current position in the ring buffer.
+     * @param d_normals Input buffer of surface normals on the device.
+     * @param d_normalsCount A device buffer containing a single u32 value: the count of valid normals.
+     * @param d_axisAccumulators Output buffer of axis accumulators to be updated by the kernel.
+     * @param d_ringBuffer A circular buffer for storing unmatched "orphan" normals.
+     * @param d_ringBufferPosition An atomic counter for the current position in the ring buffer.
      */
     void h_adaptiveRdvVoting(
         const DeviceBuffer<Vec3f>& d_normals,

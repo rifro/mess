@@ -1,28 +1,28 @@
 #pragma once
 
 // --- C++ Standard Library ---
-#include <algorithm> // Voor std::round, std::max, std::min
+#include <algorithm> // For std::round, std::max, std::min
 #include <array>
-#include <cassert> // Voor assert
-#include <cmath>   // Voor std::floor, std::round, std::sqrt, std::abs
-#include <cstddef> // Voor size_t
+#include <cassert> // For assert
+#include <cmath>   // For std::floor, std::round, std::sqrt, std::abs
+#include <cstddef> // For size_t
 #include <cstdint>
 #include <format>
-#include <functional>  // Voor std::function
-#include <iostream>    // Voor std::cout, std::cerr
-#include <limits>      //
-#include <memory>      // Voor std::unique_ptr, std::shared_ptr
-#include <numeric>     //
-#include <signal.h>    // Voor signal()
-#include <sstream>     // Voor std::stringstream (toegevoegd voor eerdere discussie)
-#include <stdexcept>   // Voor std::invalid_argument, std::runtime_error
-#include <string>      //
-#include <tuple>       //
-#include <type_traits> // Vereist voor std::is_base_of_v
-#include <vector>      //
+#include <functional>  // For std::function
+#include <iostream>    // For std::cout, std::cerr
+#include <limits>
+#include <memory>      // For std::unique_ptr, std::shared_ptr
+#include <numeric>
+#include <csignal>     // For signal()
+#include <sstream>     // For std::stringstream
+#include <stdexcept>   // For std::invalid_argument, std::runtime_error
+#include <string>
+#include <tuple>
+#include <type_traits> // Required for std::is_base_of_v
+#include <vector>
 
 // --- CloudCompare Core ---
-// #include <PointCloud.h> // Let op: kan conflicteren met ccPointCloud indien beide gebruikt worden
+// #include <PointCloud.h> // Note: can conflict with ccPointCloud if both are used
 // #include <ccColorScaleEditorDialog.h>
 #include <ccColorScalesManager.h>
 #include <ccGLMatrix.h>
@@ -31,14 +31,14 @@
 #include <ccOctree.h>
 #include <ccPointCloud.h>
 #include <ccScalarField.h>
-#include <ccStdPluginInterface.h> // Voor CloudCompare plugin interface
+#include <ccStdPluginInterface.h> // For the CloudCompare plugin interface
 
 // --- CCCoreLib ---
 #include <CCConst.h>
-#include <CCCoreLib.h> // Voor CCCoreLib::computeOptimalLevel
-#include <CCGeom.h>    //
-#include <CCMath.h>    // Voor CCCoreLib::DegreesToRadians
-#include <CCTypes.h>   // Voor PointCoordinateType = float!
+#include <CCCoreLib.h> // For CCCoreLib::computeOptimalLevel
+#include <CCGeom.h>
+#include <CCMath.h>    // For CCCoreLib::DegreesToRadians
+#include <CCTypes.h>   // For PointCoordinateType = float!
 #include <CloudSamplingTools.h>
 #include <DgmOctree.h>
 #include <GenericIndexedCloudPersist.h>
@@ -47,8 +47,8 @@
 // --- Qt ---
 #include <QAction>
 #include <QColor> // For qRgb
-// #include <QDebug> // Voor qDebug
-#include <QDir> // Voor QDir::mkpath
+// #include <QDebug> // For qDebug
+#include <QDir> // For QDir::mkpath
 #include <QFile>
 #include <QImage>
 #include <QList>
