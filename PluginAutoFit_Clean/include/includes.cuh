@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 
 // --- Eigen CUDA Headers ---
-#include "config.h"
+#include "config.cuh"
 #include "cuda_utils.cuh"
 #include "device_buffer.cuh"
 #include "normal_generation.cuh"

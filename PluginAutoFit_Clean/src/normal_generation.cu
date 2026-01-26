@@ -3,32 +3,48 @@
 
 namespace Bocari
 {
-    // Forward declaration
+    // Forward declaration for the CUDA kernel
     __global__ void k_generateNormalsKernel(
-        const float* d_pointsX,
-        const float* d_pointsY,
-        const float* d_pointsZ,
+        const float* __restrict__ d_pointsX,
+        const float* __restrict__ d_pointsY,
+        const float* __restrict__ d_pointsZ,
         u32 pointCount,
-        u8* d_pointLabels,
-        Vec3f* d_normals,
-        u32* d_normalsCount,
-        u32 maxNormals
-    );
+        u8* __restrict__ d_pointLabels,
+        Vec3f* __restrict__ d_normals,
+        u32* __restrict__ d_normalsCount,
+        u32 maxNormals);
 
-    // Helper functions
-    __device__ inline Vec3f getPoint(const float* x, const float* y, const float* z, u32 index)
+    /**
+     * @brief Retrieves a 3D point from the Structure-of-Arrays (SoA) buffers.
+     */
+    __device__ inline Vec3f getPoint(const float* __restrict__ x, const float* __restrict__ y, const float* __restrict__ z, u32 index)
     {
         return {x[index], y[index], z[index]};
     }
 
+    /**
+     * @brief Checks if three points are collinear (lie on the same line).
+     * @details This is determined by checking if the area of the parallelogram formed by the
+     * vectors (p2-p1) and (p3-p1) is close to zero. The squared magnitude of the cross
+     * product is used to avoid a costly square root operation.
+     * @return `true` if the points are collinear, `false` otherwise.
+     */
     __device__ bool isCollinear(const Vec3f& p1, const Vec3f& p2, const Vec3f& p3)
     {
         Vec3f side1 = p2 - p1;
         Vec3f side2 = p3 - p1;
         Vec3f crossProd = cross(side1, side2);
-        return dot(crossProd, crossProd) < getConfig().m_ringFilter.m_minAreaSq;
+        return dot(crossProd, crossProd) < d_config.ringFilter.minAreaSq;
     }
 
+    /**
+     * @brief Performs a planarity test to see if a test point lies on the plane defined by three other points.
+     * @details This function first checks for collinearity among the plane-defining points.
+     * It then calculates the plane's normal and checks if the squared distance from the
+     * `pTest` point to this plane is within a small tolerance (`epsilonSq`).
+     * If the test passes, the calculated normal is returned via `outNormal`.
+     * @return `true` if the test point is on the plane, `false` otherwise.
+     */
     __device__ bool passesPlanarityTest(const Vec3f& p1, const Vec3f& p2, const Vec3f& p3, const Vec3f& pTest, Vec3f& outNormal)
     {
         if (isCollinear(p1, p2, p3)) return false;
@@ -37,7 +53,7 @@ namespace Bocari
         float d = dot(normal, p1);
         float distanceSq = powf(dot(normal, pTest) - d, 2);
 
-        bool success = distanceSq < getConfig().m_ringFilter.m_epsilonSq;
+        bool success = distanceSq < d_config.ringFilter.epsilonSq;
         if (success)
         {
             outNormal = normal;
@@ -45,21 +61,20 @@ namespace Bocari
         return success;
     }
 
-    // Host function
     void h_generateNormals(
         const DeviceBuffer<float>& d_pointsX,
         const DeviceBuffer<float>& d_pointsY,
         const DeviceBuffer<float>& d_pointsZ,
+        u32 pointCount,
         DeviceBuffer<u8>& d_pointLabels,
         DeviceBuffer<Vec3f>& d_normals,
         DeviceBuffer<u32>& d_normalsCount
     )
     {
-        const u32 pointCount = d_pointsX.size();
         if (pointCount == 0) return;
 
-        const u32 maxNormals = d_normals.size();
         d_normalsCount.memset(0);
+        const u32 maxNormals = d_normals.size();
 
         const u32 blockSize = 256;
         const u32 gridSize = (pointCount + blockSize - 1) / blockSize;
@@ -76,15 +91,23 @@ namespace Bocari
         );
     }
 
-    // Kernel function
+    /**
+     * @brief CUDA kernel to generate surface normals from a point cloud.
+     * @details Each thread processes a single point (`pCenter`). It searches for neighbors within
+     * a ring defined by a min and max radius. This avoids numerical instability from points
+     * that are too close. It uses a "double planarity" test: a valid normal is found only if
+     * a test point `p3` lies on the plane `(pCenter, p1, p2)` AND `pCenter` also lies on
+     * the plane `(p1, p2, p3)`. This robustly confirms a local planar structure.
+     * If a valid normal is found, it is atomically added to the output buffer.
+     */
     __global__ void k_generateNormalsKernel(
-        const float* d_pointsX,
-        const float* d_pointsY,
-        const float* d_pointsZ,
+        const float* __restrict__ d_pointsX,
+        const float* __restrict__ d_pointsY,
+        const float* __restrict__ d_pointsZ,
         u32 pointCount,
-        u8* d_pointLabels,
-        Vec3f* d_normals,
-        u32* d_normalsCount,
+        u8* __restrict__ d_pointLabels,
+        Vec3f* __restrict__ d_normals,
+        u32* __restrict__ d_normalsCount,
         u32 maxNormals
     )
     {
@@ -96,6 +119,8 @@ namespace Bocari
         int ringCount = 0;
         int farPointCount = 0;
 
+        // This simplified search is for demonstration. A real implementation
+        // would use a more efficient spatial data structure (e.g., Morton-ordered search).
         for (u32 j = pointIndex + 1; j < pointCount; ++j)
         {
             if (farPointCount >= 2) break;
@@ -104,9 +129,9 @@ namespace Bocari
             Vec3f diff = pNeighbor - pCenter;
             float distSq = dot(diff, diff);
 
-            if (distSq <= getConfig().m_ringFilter.m_maxRadiusSq)
+            if (distSq <= d_config.ringFilter.maxRadiusSq)
             {
-                if (distSq > getConfig().m_ringFilter.m_minRadiusSq)
+                if (distSq > d_config.ringFilter.minRadiusSq)
                 {
                     if (ringCount < 4)
                     {
@@ -116,6 +141,7 @@ namespace Bocari
             }
             else
             {
+                // Early-out optimization: if too many points are far away, this region is likely noise.
                 farPointCount++;
             }
         }
@@ -129,6 +155,7 @@ namespace Bocari
         Vec3f finalNormal;
         Vec3f p1 = ringPoints[0], p2 = ringPoints[1], p3 = ringPoints[2];
 
+        // The double planarity test ensures the local geometry is consistent.
         if (passesPlanarityTest(pCenter, p1, p2, p3, finalNormal) && passesPlanarityTest(p1, p2, p3, pCenter, finalNormal))
         {
             u32 index = atomicAdd(d_normalsCount, 1);

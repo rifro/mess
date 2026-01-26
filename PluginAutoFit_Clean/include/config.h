@@ -6,25 +6,32 @@ namespace Bocari
 {
     struct RingFilterConfig
     {
-        float m_minRadiusSq      = 0.001f * 0.001f; // 1 mm
-        float m_maxRadiusSq      = 0.07f * 0.07f;   // 7 cm
-        float m_epsilonSq        = 0.001f * 0.001f; // 1 mm tolerance for planarity test
-        float m_minAreaSq        = 1e-6f * 1e-6f;   // For collinearity check
+        float minRadiusSq      = 0.001f * 0.001f; // 1 mm
+        float maxRadiusSq      = 0.07f * 0.07f;   // 7 cm
+        float epsilonSq        = 0.001f * 0.001f; // 1 mm tolerance for planarity test
+        float minAreaSq        = 1e-6f * 1e-6f;   // For collinearity check
     };
 
     struct RdvVoterConfig
     {
-        float m_cosCutoff           = 0.2588f; // cos(75), cutoff for 90 +/- 15 degrees
-        float m_minNudgeThreshold   = 0.1f;
-        u32   m_cacheSize           = 16;
-        u32   m_ringBufferSize      = 256;
-        float m_initialVoteCount    = 10.0f; // Smoothes initial nudging
+        float cosCutoff           = 0.2588f; // cos(75), cutoff for 90 +/- 15 degrees
+        float minNudgeThreshold   = 0.1f;
+        u32   cacheSize           = 16;
+        u32   ringBufferSize      = 8; // Must be a power of two
+        float initialVoteCount    = 10.0f; // Smoothes initial nudging
+
+        // This function must be executed by the host compiler, but its result is used in device code.
+        // It calculates the bitwise mask for the ring buffer's circular addressing.
+        static constexpr u32 getRingBufferMask()
+        {
+            return ringBufferSize - 1;
+        }
     };
 
     struct RdvConfig
     {
-        RingFilterConfig m_ringFilter;
-        RdvVoterConfig   m_rdvVoter;
+        RingFilterConfig ringFilter;
+        RdvVoterConfig   rdvVoter;
     };
 
     // Global config accessor
