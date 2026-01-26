@@ -17,8 +17,15 @@ namespace Bocari
         float m_cosCutoff           = 0.2588f; // cos(75), cutoff for 90 +/- 15 degrees
         float m_minNudgeThreshold   = 0.1f;
         u32   m_cacheSize           = 16;
-        u32   m_ringBufferSize      = 256;
+        u32   m_ringBufferSize      = 8; // Must be a power of two
         float m_initialVoteCount    = 10.0f; // Smoothes initial nudging
+
+        // This function must be executed by the host compiler, but its result is used in device code.
+        // It calculates the bitwise mask for the ring buffer's circular addressing.
+        static constexpr u32 getRingBufferMask()
+        {
+            return m_ringBufferSize - 1;
+        }
     };
 
     struct RdvConfig

@@ -141,7 +141,9 @@ namespace Bocari
              * are evicted before their corresponding axis emerges.
              */
             u32 ringBufferIndex = atomicAdd(d_ringBufferPosition, 1);
-            u32 pos = ringBufferIndex % d_config.m_rdvVoter.m_ringBufferSize;
+            // Use bitwise AND with a mask for efficient circular addressing.
+            // This is much faster than a modulo operation, but requires the buffer size to be a power of two.
+            u32 pos = ringBufferIndex & RdvVoterConfig::getRingBufferMask();
 
             // The evicted normal is the one currently at `pos` before we overwrite it.
             Vec3f evictedNormal = d_ringBuffer[pos];
