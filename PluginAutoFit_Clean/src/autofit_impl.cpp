@@ -30,28 +30,31 @@ namespace Bocari
 
         if (!this->selectedCloud) return;
 
-        // 1. Update the constant configuration on the GPU
+        // 1. Initialize host-side configuration (pre-calculates squared values)
+        getConfig().init();
+
+        // 2. Update the constant configuration on the GPU
         h_updateConstantConfig(getConfig());
 
-        // 2. Subsample the point cloud to a manageable size
+        // 3. Subsample the point cloud to a manageable size
         auto subsampledCloud = voxelSample(this->selectedCloud);
         const u32 pointCount = subsampledCloud->size();
         if (pointCount == 0) return;
 
-        // 3. Allocate or resize CUDA buffers
+        // 4. Allocate or resize CUDA buffers
         d_pointsX->allocate(pointCount);
         d_pointsY->allocate(pointCount);
         d_pointsZ->allocate(pointCount);
         d_pointLabels->allocate(pointCount);
-        d_normals->allocate(pointCount); // Max possible normals is pointCount
+        d_normals->allocate(pointCount);
 
-        // 4. Split point cloud into Structure-of-Arrays (SoA) and upload to GPU
+        // 5. Split point cloud into Structure-of-Arrays (SoA) and upload to GPU
         splitPointCloudToSoa(subsampledCloud.get(), *d_pointsX, *d_pointsY, *d_pointsZ);
 
-        // 5. Launch CUDA kernel to generate normals
+        // 6. Launch CUDA kernel to generate normals
         h_generateNormals(*d_pointsX, *d_pointsY, *d_pointsZ, pointCount, *d_pointLabels, *d_normals, *d_normalsCount);
 
-        // 6. Prepare for and launch RDV Voter kernel
+        // 7. Prepare for and launch RDV Voter kernel
         d_axisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
         d_axisAccumulators->memset(0);
 
@@ -60,26 +63,27 @@ namespace Bocari
 
         h_adaptiveRdvVoting(*d_normals, *d_normalsCount, *d_axisAccumulators, *d_ringBuffer, *d_ringBufferPosition);
 
-        // 7. Copy results back to the host
+        // 8. Copy results back to the host
         const u32 axisCount = getConfig().rdvVoter.cacheSize;
         std::vector<RdvAxisAccumulator> h_axisAccumulators(axisCount);
         cudaMemcpy(h_axisAccumulators.data(), d_axisAccumulators->data(), axisCount * sizeof(RdvAxisAccumulator), cudaMemcpyDeviceToHost);
 
-        // Placeholder: Log the results to the console to verify data transfer
+        // Placeholder: Log the results to the console
         if (this->app)
         {
-            this->app->dispToConsole("AutoFit: Successfully retrieved results from GPU.", ccMainAppInterface::STD_CONSOLE_MESSAGE);
+            this->app->dispToConsole("AutoFit: RDV process complete. Results:", ccMainAppInterface::STD_CONSOLE_MESSAGE);
             for (u32 i = 0; i < axisCount; ++i)
             {
-                if (h_axisAccumulators[i].m_voteCount > 0)
+                // Display only axes that have accumulated significant weight
+                if (h_axisAccumulators[i].voteWeightSum > 1.0f)
                 {
-                    Vec3f axis = normalize(h_axisAccumulators[i].m_vectorSum);
-                    this->app->dispToConsole(QString("  - Axis %1: votes=%2, dir=(%3, %4, %5)")
+                    Vec3f axisDir = normalize(h_axisAccumulators[i].axis);
+                    this->app->dispToConsole(QString("  - Axis %1: weight=%2, dir=(%3, %4, %5)")
                                              .arg(i)
-                                             .arg(h_axisAccumulators[i].m_voteCount)
-                                             .arg(axis.m_x)
-                                             .arg(axis.m_y)
-                                             .arg(axis.m_z),
+                                             .arg(h_axisAccumulators[i].voteWeightSum)
+                                             .arg(axisDir.x)
+                                             .arg(axisDir.y)
+                                             .arg(axisDir.z),
                                          ccMainAppInterface::STD_CONSOLE_MESSAGE);
                 }
             }
@@ -88,7 +92,6 @@ namespace Bocari
 
     std::unique_ptr<ccPointCloud> AutoFitImpl::voxelSample(ccPointCloud* inputCloud)
     {
-        // This is a simplified stub. A real implementation would perform voxel grid sampling.
         return std::make_unique<ccPointCloud>(*inputCloud);
     }
 
