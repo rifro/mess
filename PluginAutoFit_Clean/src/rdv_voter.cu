@@ -40,9 +40,8 @@ namespace Bocari
 
         if (bestSlot != -1)
         {
-<<<<<<< HEAD
             float currentWeight = atomicAdd(&d_accumulators[bestSlot].voteWeightSum, maxWeight);
-
+            
             // Nudge only if the axis is not yet stable
             if (currentWeight < d_config.rdvVoter.nudgeWeightCap)
             {
@@ -52,23 +51,12 @@ namespace Bocari
                 atomicAdd(&d_accumulators[bestSlot].axis.y, nudge.y);
                 atomicAdd(&d_accumulators[bestSlot].axis.z, nudge.z);
             }
-=======
-            u32 oldCount = atomicAdd(&d_accumulators[bestSlot].m_voteCount, 1);
-            // The learning rate `alpha` decreases as more votes are cast, stabilizing the axis.
-            float alpha = 1.0f / (oldCount + d_config.rdvVoter.initialVoteCount);
-            Vec3f nudge = normal * (alpha * maxWeight);
-            
-            atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_x, nudge.m_x);
-            atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_y, nudge.m_y);
-            atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_z, nudge.m_z);
->>>>>>> origin/master
             return true;
         }
 
         return false;
     }
 
-<<<<<<< HEAD
     void h_adaptiveRdvVoting(
         const DeviceBuffer<Vec3f>& d_normals,
         const DeviceBuffer<u32>& d_normalsCount,
@@ -118,15 +106,14 @@ namespace Bocari
 
         if (!tryMatchAndNudge(inputNormal, d_axisAccumulators))
         {
-<<<<<<< HEAD
             u32 ringBufferIndex = atomicAdd(d_ringBufferPosition, 1);
             u32 pos = ringBufferIndex & RdvVoterConfig::getRingBufferMask();
-
+            
             Vec3f evictedNormal = d_ringBuffer[pos];
             d_ringBuffer[pos] = inputNormal;
 
             // Optional "Last Vote" logic (kept commented out as per design)
-=======
+
             /**
              * @brief Ring Buffer Eviction Strategy
              * @details When a normal fails to match an existing axis, it is placed in a FIFO
@@ -156,7 +143,7 @@ namespace Bocari
              * its orientation. It is disabled by default to favor stability over utilizing
              * every last piece of data.
              */
->>>>>>> origin/master
+
             // if (ringBufferIndex >= d_config.rdvVoter.ringBufferSize) {
             //     Vec3f evictedNormal = d_ringBuffer[pos];
             //     tryMatchAndNudge(evictedNormal, d_axisAccumulators);
