@@ -1,8 +1,0 @@
-# Find CUDA toolkit
-find_package(CUDAToolkit REQUIRED)
-set(CUDAToolkit_USE_STATIC_CUDA_RUNTIME OFF)  # Prefer dynamic, no librt needed
-
-find_package(Thrust REQUIRED)
-if (TARGET thrust)
-    target_link_libraries(${PROJECT_NAME} PRIVATE thrust)
-endif()
