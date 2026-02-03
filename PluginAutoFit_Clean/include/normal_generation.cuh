@@ -1,30 +1,37 @@
 #pragma once
+#include "rdv_types.h"
 
 namespace Bocari
 {
     /**
      * @brief Launches the CUDA kernel to generate surface normals for a point cloud.
-     * @details This host function prepares and launches the normal generation kernel.
-     * It sets up the grid and block dimensions based on the total number of points
-     * and initializes the output normal counter to zero before launching the kernel.
-     * The point cloud data is expected in a Structure-of-Arrays (SoA) format.
+     * @details This host dispatcher prepares and launches the normal generation kernel 
+     * using a Structure-of-Arrays (SoA) format.
+     * It resets the atomic normal counter on the device before execution.
      *
-     * @param d_pointsX Device buffer with X coordinates of the points.
-     * @param d_pointsY Device buffer with Y coordinates of the points.
-     * @param d_pointsZ Device buffer with Z coordinates of the points.
-     * @param pointCount The total number of points in the cloud, passed by value for efficiency.
-     * @param d_pointLabels Output device buffer to store point classifications (e.g., Chaos, Surface).
-     * @param d_normals Output device buffer for the calculated normals.
-     * @param d_normalsCount An atomic counter on the device for the total number of generated normals.
+     * Axis swapping is supported by changing the order of the d_x, d_y, and d_z 
+     * pointers during the call.
+     *
+     * @param d_x Device buffer with X coordinates (i32 mm).
+     * @param d_y Device buffer with Y coordinates (i32 mm).
+     * @param d_z Device buffer with Z coordinates (i32 mm).
+     * @param d_types Device buffer for point classification (e.g., Chaos, Duplicate).
+     * @param d_sortedIndices Morton-sorted indices for spatial locality.
+     * @param pointCount Total number of points to process.
+     * @param d_normals Output device buffer for generated unit normals.
+     * @param d_normalsCount Atomic counter on the device for the number of generated normals.
+     * @param maxNormals Maximum capacity of the d_normals buffer.
      */
     void h_generateNormals(
-        const DeviceBuffer<float>& d_pointsX,
-        const DeviceBuffer<float>& d_pointsY,
-        const DeviceBuffer<float>& d_pointsZ,
+        const i32* d_x, 
+        const i32* d_y, 
+        const i32* d_z,
+        u8* d_types,
+        const u32* d_sortedIndices,
         u32 pointCount,
-        DeviceBuffer<u8>& d_pointLabels,
-        DeviceBuffer<Vec3f>& d_normals,
-        DeviceBuffer<u32>& d_normalsCount
+        Vec3f* d_normals,
+        u32* d_normalsCount,
+        u32 maxNormals
     );
 
 } // namespace Bocari

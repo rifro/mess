@@ -3,13 +3,6 @@
 
 namespace Bocari
 {
-    // Forward declaration for the CUDA kernel
-    __global__ void k_adaptiveRdvVoterKernel(
-        const Vec3f* __restrict__ d_normals,
-        u32 normalsCount,
-        RdvAxisAccumulator* __restrict__ d_axisAccumulators,
-        Vec3f* __restrict__ d_ringBuffer,
-        u32* __restrict__ d_ringBufferPosition);
 
     /**
      * @brief Calculates a weight based on the perpendicularity of two vectors.
@@ -29,7 +22,7 @@ namespace Bocari
         float p2 = sinSq * sinSq;
         float p4 = p2 * p2;
         float p8 = p4 * p4;
-        return p8 * p8; // p16
+        return p8 * p8; // Result is sin(theta)^32
     }
 
     /**
@@ -71,6 +64,7 @@ namespace Bocari
             // The learning rate `alpha` decreases as more votes are cast, stabilizing the axis.
             float alpha = 1.0f / (oldCount + d_config.rdvVoter.initialVoteCount);
             Vec3f nudge = normal * (alpha * maxWeight);
+            
             atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_x, nudge.m_x);
             atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_y, nudge.m_y);
             atomicAdd(&d_accumulators[bestSlot].m_vectorSum.m_z, nudge.m_z);
@@ -78,31 +72,6 @@ namespace Bocari
         }
 
         return false;
-    }
-
-    void h_adaptiveRdvVoting(
-        const DeviceBuffer<Vec3f>& d_normals,
-        const DeviceBuffer<u32>& d_normalsCount,
-        DeviceBuffer<RdvAxisAccumulator>& d_axisAccumulators,
-        DeviceBuffer<Vec3f>& d_ringBuffer,
-        DeviceBuffer<u32>& d_ringBufferPosition)
-    {
-        // The number of normals is determined by the previous kernel, so we must
-        // copy it back to the host to determine the correct grid size for this kernel.
-        u32 h_normalsCount = 0;
-        cudaMemcpy(&h_normalsCount, d_normalsCount.data(), sizeof(u32), cudaMemcpyDeviceToHost);
-
-        if (h_normalsCount == 0) return;
-
-        const u32 blockSize = 256;
-        const u32 gridSize = (h_normalsCount + blockSize - 1) / blockSize;
-
-        k_adaptiveRdvVoterKernel<<<gridSize, blockSize>>>(
-            d_normals.data(),
-            h_normalsCount,
-            d_axisAccumulators.data(),
-            d_ringBuffer.data(),
-            d_ringBufferPosition.data());
     }
 
     /**
@@ -135,24 +104,26 @@ namespace Bocari
             /**
              * @brief Ring Buffer Eviction Strategy
              * @details When a normal fails to match an existing axis, it is placed in a FIFO
-             * ring buffer. In the current strategy, when the buffer is full, the oldest
-             * normal is simply overwritten and discarded. This is the simplest approach,
+             * ring buffer. This buffer serves as a short-term memory of recent normals that 
+             * couldn't find a home, allowing new axes to potentially form from them.
+             * In the current strategy, when the buffer is full, the oldest normal is simply overwritten and discarded. 
+             * This approach strikes a balance between memory efficiency and exhaustive search,
              * minimizing computation but potentially losing information from normals that
              * are evicted before their corresponding axis emerges.
              */
             u32 ringBufferIndex = atomicAdd(d_ringBufferPosition, 1);
-            // Use bitwise AND with a mask for efficient circular addressing.
-            // This is much faster than a modulo operation, but requires the buffer size to be a power of two.
-            u32 pos = ringBufferIndex & RdvVoterConfig::getRingBufferMask();
+            
+            // Efficient circular addressing using bitwise AND (requires power-of-two size).
+            u32 pos = ringBufferIndex & d_config.rdvVoter.ringBufferMask;
 
             // The evicted normal is the one currently at `pos` before we overwrite it.
-            Vec3f evictedNormal = d_ringBuffer[pos];
+            // Vec3f evictedNormal = d_ringBuffer[pos];
 
             d_ringBuffer[pos] = inputNormal;
 
             /**
              * @brief Optional "Last Vote" for Evicted Normals
-             * @details Enabling the code below gives an evicted normal one last chance to vote.
+             * @details Enabling the code below gives an evicted normal one last chance to vote. (Disabled by default) 
              * This ensures no information is lost, as every normal contributes to an axis at
              * some point. However, this may not always be desirable. If an axis has already
              * stabilized, a late vote from a noisy or outlier normal could slightly corrupt
@@ -160,9 +131,38 @@ namespace Bocari
              * every last piece of data.
              */
             // if (ringBufferIndex >= d_config.rdvVoter.ringBufferSize) {
+            //     Vec3f evictedNormal = d_ringBuffer[pos];
             //     tryMatchAndNudge(evictedNormal, d_axisAccumulators);
             // }
         }
+    }
+
+    /**
+     * @brief Host dispatcher for the RDV voting kernel.
+     * @details Synchronizes the normal count and launches the kernel.
+     */
+    void h_adaptiveRdvVoting(
+        const Vec3f* d_normals,
+        const u32* d_normalsCount,
+        RdvAxisAccumulator* d_axisAccumulators,
+        Vec3f* d_ringBuffer,
+        u32* d_ringBufferPosition)
+    {
+        // Copy the atomic count back to host to determine grid size
+        u32 h_normalsCount = 0;
+        cudaMemcpy(&h_normalsCount, d_normalsCount, sizeof(u32), cudaMemcpyDeviceToHost);
+
+        if (h_normalsCount == 0) return;
+
+        const u32 blockSize = 256;
+        const u32 gridSize = (h_normalsCount + blockSize - 1) / blockSize;
+
+        k_adaptiveRdvVoterKernel<<<gridSize, blockSize>>>(
+            d_normals,
+            h_normalsCount,
+            d_axisAccumulators,
+            d_ringBuffer,
+            d_ringBufferPosition);
     }
 
 } // namespace Bocari

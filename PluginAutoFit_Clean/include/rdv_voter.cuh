@@ -1,26 +1,32 @@
 #pragma once
+#include "includes.h"
+#include "strict.h"
 
 namespace Bocari
 {
-    /**
-     * @brief Launches the CUDA kernel for adaptive Radial Disk Voting (RDV).
-     * @details This host function orchestrates the RDV process. It retrieves the number
-     * of normals from the GPU (since it's computed by a previous kernel), calculates
-     * the required CUDA grid size, and then launches the k_adaptiveRdvVoterKernel
-     * to perform the actual axis voting and refinement.
-     *
-     * @param d_normals Input buffer of surface normals on the device.
-     * @param d_normalsCount A device buffer containing a single u32 value: the count of valid normals.
-     * @param d_axisAccumulators Output buffer of axis accumulators to be updated by the kernel.
-     * @param d_ringBuffer A circular buffer for storing unmatched "orphan" normals.
-     * @param d_ringBufferPosition An atomic counter for the current position in the ring buffer.
-     */
-    void h_adaptiveRdvVoting(
-        const DeviceBuffer<Vec3f>& d_normals,
-        const DeviceBuffer<u32>& d_normalsCount,
-        DeviceBuffer<RdvAxisAccumulator>& d_axisAccumulators,
-        DeviceBuffer<Vec3f>& d_ringBuffer,
-        DeviceBuffer<u32>& d_ringBufferPosition
-    );
+    struct RingFilterConfig
+    {
+        // ... (bestaande radius waarden)
+        
+        // Using pow2 from includes.h for readability. 
+        // Compilers will optimize these into constants at compile-time.
+        float innerRadiusSq     = pow2(0.001f);
+        float outerRadiusSq     = pow2(0.070f);
+        float mortonJumpSq      = pow2(0.100f);
+        float minAreaSq         = pow2(1e-6f);
+        float planarEpsilon     = 0.001f; 
+    };
 
-} // namespace Bocari
+    struct RdvVoterConfig
+    {
+        float cosCutoff           = 0.2588f; 
+        float minNudgeThreshold   = 0.01f; // Renamed for consistency with kernel
+        u32   cacheSize           = 16;
+        u32   initialVoteCount    = 8;     // Added for the alpha calculation
+        
+        u32   ringBufferSize      = 4096;  // Example: must be power of 2
+        u32   ringBufferMask      = 4096 - 1; 
+    };
+
+    // ... (rest van de structs)
+}
