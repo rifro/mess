@@ -3,11 +3,19 @@
 #include "includes.cuh"
 #include <numeric>
 #include <algorithm>
+#include <cstring>
 
 namespace Bocari
 {
     AutoFitImpl::AutoFitImpl() : m_app(nullptr), m_selectedCloud(nullptr) 
     {
+        // Ensure hardware limits are calculated once
+        getConfig().hardware.init();
+
+        // Allocate the transfer block buffer (0.5 GB) on the device
+        m_dPageBlockBuffer = std::make_unique<DeviceBuffer<u8>>(512ULL * 1024 * 1024);
+
+        // Processing buffers
         m_dPointsX = std::make_unique<DeviceBuffer<i32>>();
         m_dPointsY = std::make_unique<DeviceBuffer<i32>>();
         m_dPointsZ = std::make_unique<DeviceBuffer<i32>>();
@@ -31,83 +39,195 @@ namespace Bocari
         getConfig().init();
         h_updateConstantConfig(getConfig());
 
-        // 2. Subsample the point cloud (placeholder for now)
-        auto subsampledCloud = voxelSample(m_selectedCloud);
-        const u32 pointCount = static_cast<u32>(subsampledCloud->size());
-        if (pointCount == 0) return;
+        // 2. Convert CC AoS to Host SoA in millimeters and analyze ranges
+        convertToSoaAndAnalyze();
 
-        // 3. Allocate CUDA buffers
-        m_dPointsX->allocate(pointCount);
-        m_dPointsY->allocate(pointCount);
-        m_dPointsZ->allocate(pointCount);
-        m_dPointLabels->allocate(pointCount);
-        m_dNormals->allocate(pointCount);
+        // 3. Swapping: Sort logical axes so m_axes[0] is the longest (logical X)
+        sortAxesByRange();
 
-        // 4. Split and Upload SoA in millimeters
-        splitPointCloudToSoa(subsampledCloud.get(), *m_dPointsX, *m_dPointsY, *m_dPointsZ);
+        // 4. Recursive Page generation (median-split on logical X)
+        std::vector<u32> initialIndices(m_selectedCloud->size());
+        std::iota(initialIndices.begin(), initialIndices.end(), 0);
 
-        // 5. Normal Generation
-        // New normal generation requires a sorted indices buffer
-        DeviceBuffer<u32> d_sortedIndices(pointCount);
-        std::vector<u32> h_indices(pointCount);
-        std::iota(h_indices.begin(), h_indices.end(), 0);
-        d_sortedIndices.upload(h_indices.data(), pointCount);
+        m_pages.clear();
+        generatePagesRecursively(initialIndices, m_axes[0].range, m_axes[1].range, m_axes[2].range);
 
-        h_generateNormals(m_dPointsX->data(), m_dPointsY->data(), m_dPointsZ->data(),
-                          m_dPointLabels->data(), d_sortedIndices.data(), pointCount,
-                          m_dNormals->data(), m_dNormalsCount->data(), pointCount);
+        // 5. Allocate the large Page Buffer on GPU for this run
+        const size_t bytesPerPoint = 15; // i32*3 + u8 + u16
+        size_t requiredGpuSize = getConfig().hardware.maxPointsPerPage * bytesPerPoint;
+        if (requiredGpuSize > 0)
+        {
+            m_dPageBuffer = std::make_unique<DeviceBuffer<u8>>(requiredGpuSize);
+        }
 
-        // 6. RDV Voting
-        m_dAxisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
-        m_dAxisAccumulators->memset(0);
+        // 6. Process each page sequentially
+        for (const auto& page : m_pages)
+        {
+            loadPageToDevice(page);
+            const u32 pointCount = static_cast<u32>(page.indices.size());
 
-        m_dRingBuffer->allocate(getConfig().rdvVoter.ringBufferSize);
-        m_dRingBufferPosition->memset(0);
+            // For now, we "unpack" the page into SoA for the existing kernels
+            // In the future, kernels might work directly on the packed page buffer.
+            m_dPointsX->allocate(pointCount);
+            m_dPointsY->allocate(pointCount);
+            m_dPointsZ->allocate(pointCount);
+            m_dPointLabels->allocate(pointCount);
+            m_dNormals->allocate(pointCount);
 
-        h_adaptiveRdvVoting(m_dNormals->data(), m_dNormalsCount->data(),
-                            m_dAxisAccumulators->data(), m_dRingBuffer->data(),
-                            m_dRingBufferPosition->data());
+            // TODO: Replace this with a GPU-side unpack kernel for better performance
+            std::vector<i32> h_x(pointCount), h_y(pointCount), h_z(pointCount);
+            for(size_t i = 0; i < pointCount; ++i) {
+                u32 idx = page.indices[i];
+                h_x[i] = (*m_axes[0].mmData)[idx];
+                h_y[i] = (*m_axes[1].mmData)[idx];
+                h_z[i] = (*m_axes[2].mmData)[idx];
+            }
+            m_dPointsX->upload(h_x.data(), pointCount);
+            m_dPointsY->upload(h_y.data(), pointCount);
+            m_dPointsZ->upload(h_z.data(), pointCount);
+            m_dPointLabels->memset(0);
 
-        // 7. Results collection (placeholder log)
-        const u32 axisCount = getConfig().rdvVoter.cacheSize;
-        std::vector<RdvAxisAccumulator> h_axisAccumulators(axisCount);
-        cudaMemcpy(h_axisAccumulators.data(), m_dAxisAccumulators->data(),
-                   axisCount * sizeof(RdvAxisAccumulator), cudaMemcpyDeviceToHost);
+            // Normal Generation
+            DeviceBuffer<u32> d_sortedIndices(pointCount);
+            std::vector<u32> h_indices(pointCount);
+            std::iota(h_indices.begin(), h_indices.end(), 0);
+            d_sortedIndices.upload(h_indices.data(), pointCount);
+
+            h_generateNormals(m_dPointsX->data(), m_dPointsY->data(), m_dPointsZ->data(),
+                              m_dPointLabels->data(), d_sortedIndices.data(), pointCount,
+                              m_dNormals->data(), m_dNormalsCount->data(), pointCount);
+
+            // RDV Voting
+            m_dAxisAccumulators->allocate(getConfig().rdvVoter.cacheSize);
+            m_dAxisAccumulators->memset(0);
+
+            m_dRingBuffer->allocate(getConfig().rdvVoter.ringBufferSize);
+            m_dRingBufferPosition->memset(0);
+
+            h_adaptiveRdvVoting(m_dNormals->data(), m_dNormalsCount->data(),
+                                m_dAxisAccumulators->data(), m_dRingBuffer->data(),
+                                m_dRingBufferPosition->data());
+
+            // Collect results from this page (further fusion happens on host)
+        }
 
         if (m_app)
         {
-            m_app->dispToConsole("AutoFit: RDV process complete.", ccMainAppInterface::STD_CONSOLE_MESSAGE);
+            m_app->dispToConsole("AutoFit: Paging and RDV processing complete.", ccMainAppInterface::STD_CONSOLE_MESSAGE);
         }
     }
 
-    std::unique_ptr<ccPointCloud> AutoFitImpl::voxelSample(ccPointCloud* inputCloud)
+    void AutoFitImpl::convertToSoaAndAnalyze()
     {
-        // Simple copy as placeholder for actual sampling
-        return std::make_unique<ccPointCloud>(*inputCloud);
-    }
-
-    void AutoFitImpl::splitPointCloudToSoa(const ccPointCloud* cloud,
-                                           DeviceBuffer<i32>& d_x,
-                                           DeviceBuffer<i32>& d_y,
-                                           DeviceBuffer<i32>& d_z)
-    {
-        const size_t pointCount = cloud->size();
-        std::vector<i32> h_x(pointCount), h_y(pointCount), h_z(pointCount);
-
-        CCVector3 bbMin;
+        const u32 count = m_selectedCloud->size();
         CCVector3 bbMax;
-        cloud->getBoundingBox(bbMin, bbMax);
+        m_selectedCloud->getBoundingBox(m_globalBbMin, bbMax);
 
-        for (size_t i = 0; i < pointCount; ++i)
+        m_rawMmX.resize(count);
+        m_rawMmY.resize(count);
+        m_rawMmZ.resize(count);
+
+        for (u32 i = 0; i < count; ++i)
         {
-            const CCVector3* p = cloud->getPoint(i);
-            h_x[i] = toMm(p->x, bbMin.x);
-            h_y[i] = toMm(p->y, bbMin.y);
-            h_z[i] = toMm(p->z, bbMin.z);
+            const CCVector3* p = m_selectedCloud->getPoint(i);
+            m_rawMmX[i] = toMm(p->x, m_globalBbMin.x);
+            m_rawMmY[i] = toMm(p->y, m_globalBbMin.y);
+            m_rawMmZ[i] = toMm(p->z, m_globalBbMin.z);
         }
 
-        d_x.upload(h_x.data(), pointCount);
-        d_y.upload(h_y.data(), pointCount);
-        d_z.upload(h_z.data(), pointCount);
+        // Point mappings to the raw physical buffers
+        m_axes[0] = { 'x', &m_rawMmX, 0, 0, 0 };
+        m_axes[1] = { 'y', &m_rawMmY, 0, 0, 0 };
+        m_axes[2] = { 'z', &m_rawMmZ, 0, 0, 0 };
+
+        // Analyze ranges for logical sorting
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto& data = *(m_axes[i].mmData);
+            auto [minIt, maxIt] = std::minmax_element(data.begin(), data.end());
+            m_axes[i].minVal = *minIt;
+            m_axes[i].maxVal = *maxIt;
+            m_axes[i].range  = static_cast<u32>(*maxIt - *minIt);
+        }
+    }
+
+    void AutoFitImpl::sortAxesByRange()
+    {
+        std::sort(std::begin(m_axes), std::end(m_axes),
+            [](const AxisMapping& a, const AxisMapping& b) {
+                return a.range > b.range;
+            });
+    }
+
+    void AutoFitImpl::generatePagesRecursively(std::vector<u32>& indices, u32 rX, u32 rY, u32 rZ)
+    {
+        const size_t count = indices.size();
+        if (count == 0) return;
+
+        const float ratio = (rY > 0) ? static_cast<float>(rX) / rY : 0.0f;
+        const size_t limit = getConfig().hardware.maxPointsPerPage;
+
+        // Check if page fits VRAM and satisfies Morton's aspect ratio requirements (max 1:2)
+        if (count <= limit && ratio <= 2.0f)
+        {
+            m_pages.push_back({std::move(indices), rX, rY, rZ});
+            return;
+        }
+
+        // Median-split on the logical X axis (m_axes[0])
+        auto mid = indices.begin() + count / 2;
+        std::nth_element(indices.begin(), mid, indices.end(), [&](u32 a, u32 b) {
+            return (*m_axes[0].mmData)[a] < (*m_axes[0].mmData)[b];
+        });
+
+        std::vector<u32> left(indices.begin(), mid);
+        std::vector<u32> right(mid, indices.end());
+
+        // Update ranges for the next recursion depth
+        u32 newRX_L = (left.empty()) ? 0 : ((*m_axes[0].mmData)[left.back()] - (*m_axes[0].mmData)[left.front()]);
+        u32 newRX_R = (right.empty()) ? 0 : ((*m_axes[0].mmData)[right.back()] - (*m_axes[0].mmData)[right.front()]);
+
+        generatePagesRecursively(left, newRX_L, rY, rZ);
+        generatePagesRecursively(right, newRX_R, rY, rZ);
+    }
+
+    void AutoFitImpl::loadPageToDevice(const Page& page)
+    {
+        const size_t bytesPerPoint = 15;
+        const size_t blockSize = 512ULL * 1024 * 1024; // 0.5 GB
+        const size_t pointsPerBlock = blockSize / bytesPerPoint;
+
+        size_t processed = 0;
+        while (processed < page.indices.size())
+        {
+            size_t currentBatch = std::min(pointsPerBlock, page.indices.size() - processed);
+
+            std::vector<u8> h_staging(currentBatch * bytesPerPoint);
+
+            for (size_t i = 0; i < currentBatch; ++i)
+            {
+                u32 idx = page.indices[processed + i];
+                size_t offset = i * bytesPerPoint;
+
+                // Packed 15-byte layout: i32(X), i32(Y), i32(Z), u8(Type), u16(ID)
+                std::memcpy(&h_staging[offset + 0], &(*m_axes[0].mmData)[idx], 4);
+                std::memcpy(&h_staging[offset + 4], &(*m_axes[1].mmData)[idx], 4);
+                std::memcpy(&h_staging[offset + 8], &(*m_axes[2].mmData)[idx], 4);
+
+                h_staging[offset + 12] = 0; // Type placeholder
+                u16 idPlaceholder = 0;
+                std::memcpy(&h_staging[offset + 13], &idPlaceholder, 2);
+            }
+
+            m_dPageBlockBuffer->upload(h_staging.data(), currentBatch * bytesPerPoint);
+
+            size_t deviceByteOffset = processed * bytesPerPoint;
+            cudaMemcpy(m_dPageBuffer->data() + deviceByteOffset,
+                       m_dPageBlockBuffer->data(),
+                       currentBatch * bytesPerPoint,
+                       cudaMemcpyDeviceToDevice);
+
+            processed += currentBatch;
+        }
     }
 }

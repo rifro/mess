@@ -3,9 +3,9 @@
 
 namespace Bocari
 {
-    void h_updateConstantConfig(const RdvConfig& hostConfig)
+    void h_updateConstantConfig(const Config& hostConfig)
     {
-        cudaMemcpyToSymbol(d_config, &hostConfig, sizeof(RdvConfig));
+        cudaMemcpyToSymbol(d_config, &hostConfig, sizeof(Config));
     }
 
 } // namespace Bocari

@@ -51,7 +51,7 @@ namespace Bocari
         // --- Category B: Execution Constants ---
         u32   cacheSize           = 16;
         u32   initialVoteCount    = 8;      // Base count for alpha stabilization
-        u32   ringBufferSize      = 4096;   // Must be a power of two
+        u32   ringBufferSize      = 64;     // Must be a power of two
         u32   ringBufferMask;
 
         /**
@@ -114,7 +114,7 @@ namespace Bocari
         }
     };
 
-    struct RdvConfig
+    struct Config
     {
         RingFilterConfig ringFilter;
         RdvVoterConfig   rdvVoter;
@@ -133,9 +133,9 @@ namespace Bocari
     /**
      * @brief Global config accessor for the host.
      */
-    inline RdvConfig& getConfig()
+    inline Config& getConfig()
     {
-        static RdvConfig h_config;
+        static Config h_config;
         return h_config;
     }
 }

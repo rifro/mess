@@ -20,16 +20,16 @@ namespace Bocari
         float m_initialVoteCount    = 10.0f; // Smoothes initial nudging
     };
 
-    struct RdvConfig
+    struct Config
     {
         RingFilterConfig m_ringFilter;
         RdvVoterConfig   m_rdvVoter;
     };
 
     // Global config accessor
-    inline RdvConfig& getConfig()
+    inline Config& getConfig()
     {
-        static RdvConfig instance;
+        static Config instance;
         return instance;
     }
 
