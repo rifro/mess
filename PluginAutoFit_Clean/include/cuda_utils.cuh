@@ -10,6 +10,6 @@ namespace Bocari
      * configuration object to the `d_config` variable in constant memory.
      * @param hostConfig The host-side configuration object to copy from.
      */
-    void h_updateConstantConfig(const RdvConfig& hostConfig);
+    void h_updateConstantConfig(const Config& hostConfig);
 
 } // namespace Bocari

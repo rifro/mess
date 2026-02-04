@@ -4,32 +4,16 @@
 
 namespace Bocari
 {
-<<<<<<< HEAD
     // Standard integer types for cross-platform consistency.
-=======
-    // Standaard integer types
->>>>>>> origin/master
     using u8  = uint8_t;
     using u16 = uint16_t;
     using u32 = uint32_t;
     using u64 = uint64_t;
     using i32 = int32_t;
 
-<<<<<<< HEAD
     /**
-     * @brief Represents an accumulator for an RDV axis hypothesis.
-     * @details This struct holds the current state of a potential axis, including its
-     * direction and the total accumulated evidence supporting it.
+     * @brief Classification enum for points in the cloud.
      */
-    struct RdvAxisAccumulator
-    {
-        Vec3f axis;           // The normalized direction of the axis candidate.
-        float voteWeightSum;  // Total accumulated evidence for this axis.
-    };
-
-    // Enum for classifying points in the cloud, used for debugging and future extensions.
-=======
->>>>>>> origin/master
     namespace PointType {
         enum PointTypeEnum : u8 {
             None        = 0,
@@ -43,30 +27,31 @@ namespace Bocari
             Plane       = 8,
             Reducer     = 9,
             Tee         = 10,
-            Surface     = 11 // Added for clarity during normal generation
+            Surface     = 11
         };
     }
 
     /**
-     * @brief De centrale 20-byte GPU structuur.
-     * @details Compacte layout geoptimaliseerd voor 4-byte alignment.
-     * X, Y, Z zijn signed integers (i32) om negatieve waarden na rotatie te ondersteunen.
+     * @brief Central 20-byte GPU point structure.
+     * @details Compact layout optimized for 4-byte alignment.
+     * X, Y, Z are signed integers (i32) representing millimeters.
      */
     struct GpuPoint {
-        i32 x, y, z;      // 12 bytes: Millimeters (signed voor rotatie)
+        i32 x, y, z;      // 12 bytes: Millimeters (signed for rotation)
         u8  type;         // 1 byte:  PointTypeEnum
-        u8  objectID[3];  // 3 bytes: 24-bit uniek object/cluster nummer
-        u32 ccIndex;      // 4 bytes: Onveranderlijk anker naar de bron-cloud
+        u8  objectID[3];  // 3 bytes: 24-bit unique object/cluster ID
+        u32 ccIndex;      // 4 bytes: Immutable index to the source cloud
     };
 
     /**
-     * @brief Accumulator voor RDV as-detectie.
-     * @details Gebruikt float gewichten op basis van sin^16(theta) voor precisie.
+     * @brief Accumulator for RDV axis detection.
+     * @details This struct holds the current state of a potential axis, including its
+     * direction (unnormalized sum of nudges) and the total accumulated evidence weight.
      */
     struct RdvAxisAccumulator
     {
-        Vec3f m_vectorSum;     // Gewogen som van normaal-vectoren
-        float m_voteWeightSum; // Totale som van alle float weights
+        Vec3f axis;           // Direction of the axis candidate (sum of weighted normals).
+        float voteWeightSum;  // Total accumulated evidence weight for this axis.
     };
 
 } // namespace Bocari
