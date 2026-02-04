@@ -4,13 +4,32 @@
 
 namespace Bocari
 {
+<<<<<<< HEAD
+    // Standard integer types for cross-platform consistency.
+=======
     // Standaard integer types
+>>>>>>> origin/master
     using u8  = uint8_t;
     using u16 = uint16_t;
     using u32 = uint32_t;
     using u64 = uint64_t;
     using i32 = int32_t;
 
+<<<<<<< HEAD
+    /**
+     * @brief Represents an accumulator for an RDV axis hypothesis.
+     * @details This struct holds the current state of a potential axis, including its
+     * direction and the total accumulated evidence supporting it.
+     */
+    struct RdvAxisAccumulator
+    {
+        Vec3f axis;           // The normalized direction of the axis candidate.
+        float voteWeightSum;  // Total accumulated evidence for this axis.
+    };
+
+    // Enum for classifying points in the cloud, used for debugging and future extensions.
+=======
+>>>>>>> origin/master
     namespace PointType {
         enum PointTypeEnum : u8 {
             None        = 0,
@@ -24,6 +43,7 @@ namespace Bocari
             Plane       = 8,
             Reducer     = 9,
             Tee         = 10,
+            Surface     = 11 // Added for clarity during normal generation
         };
     }
 
