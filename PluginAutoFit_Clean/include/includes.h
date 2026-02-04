@@ -60,7 +60,6 @@
 // --- Eigen Headers ---
 #include "kalman_filter.h"
 #include "rdv_types.h"
-#include "types.h" // Legacy types, to be merged with rdv_types
 #include "vec3.h"
 
 // --- Project-specific forward declarations ---
